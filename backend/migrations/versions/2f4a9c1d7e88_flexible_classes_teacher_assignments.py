@@ -1,7 +1,7 @@
 """flexible classes and teacher assignments
 
 Revision ID: 2f4a9c1d7e88
-Revises: f93a2c7e5b41
+Revises: 8e0f2a4b6c53
 Create Date: 2026-06-18
 
 """
@@ -10,7 +10,7 @@ import sqlalchemy as sa
 
 
 revision = "2f4a9c1d7e88"
-down_revision = "f93a2c7e5b41"
+down_revision = "8e0f2a4b6c53"
 branch_labels = None
 depends_on = None
 
