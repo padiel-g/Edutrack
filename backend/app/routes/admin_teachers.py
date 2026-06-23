@@ -2,7 +2,7 @@ import secrets
 import string
 from datetime import date
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
 from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -13,7 +13,6 @@ from app.models import (
     Attendance,
     AuditLog,
     ClassRegister,
-    ExamTimetable,
     LearningMaterial,
     Message,
     Notification,
@@ -73,9 +72,9 @@ def clear_user_audit_references(user_id):
         columns = model.__table__.columns
         updates = {}
         if "created_by_id" in columns:
-            updates[model.created_by_id] = None
+            updates["created_by_id"] = None
         if "updated_by_id" in columns:
-            updates[model.updated_by_id] = None
+            updates["updated_by_id"] = None
         if updates:
             model.query.filter(
                 (getattr(model, "created_by_id", None) == user_id)
@@ -424,7 +423,6 @@ def delete_teacher(teacher_id):
     blockers = dependency_names(
         [
             ("timetable entries", Timetable.query.filter_by(teacher_id=teacher.id)),
-            ("exam timetable entries", ExamTimetable.query.filter_by(teacher_id=teacher.id)),
             ("attendance", Attendance.query.filter_by(teacher_id=teacher.id)),
             ("class registers", ClassRegister.query.filter_by(teacher_id=teacher.id)),
             ("student results", StudentResult.query.filter_by(teacher_id=teacher.id)),
@@ -455,6 +453,10 @@ def delete_teacher(teacher_id):
     except SQLAlchemyError:
         db.session.rollback()
         return jsonify({"error": "The teacher account could not be deleted because of a database error. Please try again or deactivate the account."}), 500
+    except Exception as error:
+        db.session.rollback()
+        current_app.logger.exception("Teacher delete failed for teacher_id=%s", teacher_id)
+        return jsonify({"error": f"The teacher account could not be deleted: {error}"}), 500
     return jsonify({"message": "Teacher account deleted."})
 
 
