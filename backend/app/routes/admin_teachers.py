@@ -5,7 +5,7 @@ from datetime import date
 from flask import Blueprint, jsonify, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
 from sqlalchemy import or_
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.extensions import db, limiter
 from app.models import (
@@ -60,10 +60,27 @@ def delete_linked_user_if_unused(user):
     )
     if blockers:
         raise ValueError(f"The linked login account still has {', '.join(blockers)} and cannot be deleted.")
+    clear_user_audit_references(user.id)
     PasswordResetCode.query.filter_by(user_id=user.id).delete(synchronize_session=False)
     Notification.query.filter_by(user_id=user.id).delete(synchronize_session=False)
     AuditLog.query.filter_by(user_id=user.id).update({"user_id": None}, synchronize_session=False)
     db.session.delete(user)
+
+
+def clear_user_audit_references(user_id):
+    for mapper in db.Model.registry.mappers:
+        model = mapper.class_
+        columns = model.__table__.columns
+        updates = {}
+        if "created_by_id" in columns:
+            updates[model.created_by_id] = None
+        if "updated_by_id" in columns:
+            updates[model.updated_by_id] = None
+        if updates:
+            model.query.filter(
+                (getattr(model, "created_by_id", None) == user_id)
+                | (getattr(model, "updated_by_id", None) == user_id)
+            ).update(updates, synchronize_session=False)
 
 
 def temporary_password(length=14):
@@ -429,9 +446,15 @@ def delete_teacher(teacher_id):
         delete_linked_user_if_unused(user)
         write_audit("teacher_account_deleted", "Teacher", teacher_id, {"employeeNumber": employee_number})
         db.session.commit()
-    except (IntegrityError, ValueError) as error:
+    except ValueError as error:
         db.session.rollback()
         return jsonify({"error": str(error) or "This teacher still has records and cannot be deleted."}), 409
+    except IntegrityError as error:
+        db.session.rollback()
+        return jsonify({"error": "This teacher account still has linked database records and cannot be deleted. Deactivate the account instead."}), 409
+    except SQLAlchemyError:
+        db.session.rollback()
+        return jsonify({"error": "The teacher account could not be deleted because of a database error. Please try again or deactivate the account."}), 500
     return jsonify({"message": "Teacher account deleted."})
 
 

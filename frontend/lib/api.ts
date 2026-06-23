@@ -21,12 +21,18 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
     }
   });
   if (!response.ok) {
-    const error = await response.json().catch(() => ({ error: "Request failed" }));
+    const errorText = await response.text();
+    let error: { message?: string; error?: string } = {};
+    try {
+      error = errorText ? JSON.parse(errorText) : {};
+    } catch {
+      error = { error: errorText };
+    }
     if (response.status === 401 && token) {
       expireSession();
       throw new Error("Your session has expired. Please sign in again.");
     }
-    throw new Error(error.message ?? error.error ?? "Request failed");
+    throw new Error(error.message ?? error.error ?? `Request failed with status ${response.status}`);
   }
   return response.json();
 }
@@ -41,12 +47,18 @@ export async function apiDownload(path: string): Promise<Blob> {
     headers: token ? { Authorization: `Bearer ${token}` } : {}
   });
   if (!response.ok) {
-    const error = await response.json().catch(() => ({ error: "Download failed" }));
+    const errorText = await response.text();
+    let error: { message?: string; error?: string } = {};
+    try {
+      error = errorText ? JSON.parse(errorText) : {};
+    } catch {
+      error = { error: errorText };
+    }
     if (response.status === 401 && token) {
       expireSession();
       throw new Error("Your session has expired. Please sign in again.");
     }
-    throw new Error(error.message ?? error.error ?? "Download failed");
+    throw new Error(error.message ?? error.error ?? `Download failed with status ${response.status}`);
   }
   return response.blob();
 }
