@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from app.extensions import db, limiter
 from app.models import (
     Assignment,
+    AcademicYear,
     Attendance,
     AuditLog,
     ClassRegister,
@@ -107,15 +108,26 @@ def assignment_payloads(data):
         seen = set()
         for item in raw_assignments:
             try:
-                class_id = int(item.get("classId"))
                 subject_id = int(item.get("subjectId"))
             except (AttributeError, TypeError, ValueError):
-                raise ValueError("Each teaching assignment needs a valid class and subject.")
-            key = (class_id, subject_id)
+                raise ValueError("Each teaching assignment needs a valid subject.")
+            class_id = item.get("classId")
+            class_name = (item.get("className") or "").strip()
+            if class_id:
+                try:
+                    class_id = int(class_id)
+                except (TypeError, ValueError):
+                    raise ValueError("Class IDs must be integers.")
+            else:
+                class_id = None
+            if not class_id and not class_name:
+                raise ValueError("Each teaching assignment needs a class. Select an existing class or type a new class name.")
+            class_key = class_id or class_name.lower()
+            key = (class_key, subject_id)
             if key in seen:
                 raise ValueError("Duplicate class-subject assignments are not allowed for the same teacher.")
             seen.add(key)
-            assignments.append({"classId": class_id, "subjectId": subject_id})
+            assignments.append({"classId": class_id, "className": class_name, "subjectId": subject_id})
         return assignments
     try:
         subject_ids = list(dict.fromkeys(int(item) for item in (data.get("subjectIds") or [])))
@@ -123,6 +135,41 @@ def assignment_payloads(data):
     except (TypeError, ValueError):
         raise ValueError("Subject and class IDs must be integers.")
     return [{"classId": class_id, "subjectId": subject_id} for class_id in class_ids for subject_id in subject_ids]
+
+
+def current_academic_year_id():
+    current = AcademicYear.query.filter_by(is_current=True).order_by(AcademicYear.id.desc()).first()
+    if current:
+        return current.id
+    latest = AcademicYear.query.order_by(AcademicYear.start_date.desc(), AcademicYear.id.desc()).first()
+    return latest.id if latest else None
+
+
+def resolve_assignment_classes(assignments):
+    existing_ids = list(dict.fromkeys(item["classId"] for item in assignments if item.get("classId")))
+    classes = SchoolClass.query.filter(SchoolClass.id.in_(existing_ids)).all() if existing_ids else []
+    classes_by_id = {school_class.id: school_class for school_class in classes}
+    if len(classes) != len(existing_ids):
+        raise ValueError("One or more selected classes do not exist.")
+
+    academic_year_id = current_academic_year_id()
+    for assignment in assignments:
+        if assignment.get("classId"):
+            continue
+        class_name = assignment["className"]
+        school_class = SchoolClass.query.filter_by(name=class_name, academic_year_id=academic_year_id).first()
+        if not school_class:
+            school_class = SchoolClass(
+                name=class_name,
+                grade_level=class_name,
+                capacity=35,
+                academic_year_id=academic_year_id,
+            )
+            db.session.add(school_class)
+            db.session.flush()
+        assignment["classId"] = school_class.id
+        classes_by_id[school_class.id] = school_class
+    return classes_by_id
 
 
 def replace_assignments(teacher, assignments):
@@ -133,13 +180,12 @@ def replace_assignments(teacher, assignments):
     class_ids = list(dict.fromkeys(item["classId"] for item in assignments))
     subject_ids = list(dict.fromkeys(item["subjectId"] for item in assignments))
     subjects = Subject.query.filter(Subject.id.in_(subject_ids)).all() if subject_ids else []
-    classes = SchoolClass.query.filter(SchoolClass.id.in_(class_ids)).all() if class_ids else []
     subjects_by_id = {subject.id: subject for subject in subjects}
-    classes_by_id = {school_class.id: school_class for school_class in classes}
     if len(subjects) != len(subject_ids):
         raise ValueError("One or more selected subjects do not exist.")
-    if len(classes) != len(class_ids):
-        raise ValueError("One or more selected classes do not exist.")
+    classes_by_id = resolve_assignment_classes(assignments)
+    class_ids = list(dict.fromkeys(item["classId"] for item in assignments))
+    classes = [classes_by_id[class_id] for class_id in class_ids]
 
     # Manage the association rows through SQL only. Mixing a manual DELETE with
     # relationship assignment makes SQLAlchemy try to delete the same rows twice.

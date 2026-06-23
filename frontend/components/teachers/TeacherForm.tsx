@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/Input";
 
 type SubjectOption = { id: number; name: string; code?: string };
 type ClassOption = { id: number; name: string; gradeLevel?: string; stream?: string | null; classTeacher?: string | null; classTeacherId?: number | null };
-type Assignment = { classId: number; subjectId: number };
+type Assignment = { classId?: number | null; className?: string; subjectId: number };
 type Teacher = {
   id: number;
   email: string;
@@ -23,8 +23,8 @@ export function TeacherForm({ teacherId }: { teacherId?: number }) {
   const [subjects, setSubjects] = useState<SubjectOption[]>([]);
   const [classes, setClasses] = useState<ClassOption[]>([]);
   const [assignments, setAssignments] = useState<Assignment[]>([]);
-  const [draftClassId, setDraftClassId] = useState("");
-  const [draftSubjectId, setDraftSubjectId] = useState("");
+  const [draftClassName, setDraftClassName] = useState("");
+  const [draftSubjectIds, setDraftSubjectIds] = useState<number[]>([]);
   const [makeClassTeacher, setMakeClassTeacher] = useState(false);
   const [classTeacherId, setClassTeacherId] = useState("");
   const [teacher, setTeacher] = useState<Teacher | null>(null);
@@ -47,7 +47,7 @@ export function TeacherForm({ teacherId }: { teacherId?: number }) {
       setClasses(options.classes);
       if (result) {
         setTeacher(result.item);
-        setAssignments((result.item.assignments ?? []).map((item) => ({ classId: item.classId, subjectId: item.subjectId })));
+        setAssignments((result.item.assignments ?? []).map((item) => ({ classId: item.classId, className: item.className, subjectId: item.subjectId })));
         const assignedClassTeacher = result.item.classTeacherOf?.[0];
         setMakeClassTeacher(Boolean(assignedClassTeacher));
         setClassTeacherId(assignedClassTeacher ? String(assignedClassTeacher.id) : "");
@@ -56,19 +56,27 @@ export function TeacherForm({ teacherId }: { teacherId?: number }) {
   }, [teacherId]);
 
   function addAssignment() {
-    const classId = Number(draftClassId);
-    const subjectId = Number(draftSubjectId);
-    if (!classId || !subjectId) {
-      setError("Select both a class and a subject before adding an assignment.");
+    const className = draftClassName.trim();
+    const existingClass = classes.find((item) => item.name.toLowerCase() === className.toLowerCase());
+    if (!className || !draftSubjectIds.length) {
+      setError("Type a class and select at least one subject before adding assignments.");
       return;
     }
-    if (assignments.some((item) => item.classId === classId && item.subjectId === subjectId)) {
-      setError("This class-subject assignment has already been added.");
+    const nextAssignments = draftSubjectIds.map((subjectId) => ({
+      classId: existingClass?.id ?? null,
+      className,
+      subjectId,
+    }));
+    const duplicate = nextAssignments.find((assignment) =>
+      assignments.some((item) => (item.classId || item.className?.toLowerCase()) === (assignment.classId || assignment.className.toLowerCase()) && item.subjectId === assignment.subjectId)
+    );
+    if (duplicate) {
+      setError("One or more selected class-subject assignments have already been added.");
       return;
     }
-    setAssignments((current) => [...current, { classId, subjectId }]);
-    setDraftClassId("");
-    setDraftSubjectId("");
+    setAssignments((current) => [...current, ...nextAssignments]);
+    setDraftClassName("");
+    setDraftSubjectIds([]);
     setError("");
   }
 
@@ -91,7 +99,7 @@ export function TeacherForm({ teacherId }: { teacherId?: number }) {
         }
       );
       setTeacher(response.item);
-      setAssignments((response.item.assignments ?? []).map((item) => ({ classId: item.classId, subjectId: item.subjectId })));
+      setAssignments((response.item.assignments ?? []).map((item) => ({ classId: item.classId, className: item.className, subjectId: item.subjectId })));
       setTemporaryPassword(response.temporaryPassword ?? "");
       if (!teacherId) {
         form.reset();
@@ -158,9 +166,15 @@ export function TeacherForm({ teacherId }: { teacherId?: number }) {
 
           <section className="space-y-4">
             <h2 className="text-lg font-semibold">Teaching Assignments</h2>
-            <div className="grid gap-3 md:grid-cols-[1fr_1fr_160px]">
-              <SelectBox value={draftClassId} onChange={setDraftClassId} label="Class" placeholder="Select class" options={classes.map((item) => ({ id: item.id, label: `${item.name}${item.stream ? ` - ${item.stream}` : ""}` }))} />
-              <SelectBox value={draftSubjectId} onChange={setDraftSubjectId} label="Subject" placeholder="Select subject" options={subjects.map((item) => ({ id: item.id, label: `${item.code ? `${item.code} - ` : ""}${item.name}` }))} />
+            <div className="grid gap-3 md:grid-cols-[1fr_1.4fr_160px]">
+              <label className="space-y-1 text-sm font-medium">
+                Class
+                <Input list="teacher-class-options" value={draftClassName} onChange={(event) => setDraftClassName(event.target.value)} placeholder="Type class, e.g. Form 1A" />
+                <datalist id="teacher-class-options">
+                  {classes.map((item) => <option key={item.id} value={item.name}>{item.stream ? `${item.name} - ${item.stream}` : item.name}</option>)}
+                </datalist>
+              </label>
+              <MultiSubjectSelect subjects={subjects} selectedIds={draftSubjectIds} onChange={setDraftSubjectIds} />
               <div className="flex items-end"><Button type="button" onClick={addAssignment} className="w-full"><Plus className="h-4 w-4" /> Add Assignment</Button></div>
             </div>
             <AssignmentTable assignments={assignments} classes={classes} subjects={subjects} onRemove={(assignment) => setAssignments((current) => current.filter((item) => item !== assignment))} />
@@ -207,6 +221,23 @@ function SelectBox({ label, placeholder, value, onChange, options }: { label: st
   );
 }
 
+function MultiSubjectSelect({ subjects, selectedIds, onChange }: { subjects: SubjectOption[]; selectedIds: number[]; onChange: (ids: number[]) => void }) {
+  return (
+    <label className="space-y-1 text-sm font-medium">
+      Subjects
+      <select
+        multiple
+        value={selectedIds.map(String)}
+        onChange={(event) => onChange(Array.from(event.currentTarget.selectedOptions, (option) => Number(option.value)))}
+        className="min-h-32 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+      >
+        {subjects.map((item) => <option key={item.id} value={item.id}>{item.code ? `${item.code} - ` : ""}{item.name}</option>)}
+      </select>
+      <span className="text-xs text-slate-500">{selectedIds.length} selected</span>
+    </label>
+  );
+}
+
 function AssignmentTable({ assignments, classes, subjects, onRemove }: { assignments: Assignment[]; classes: ClassOption[]; subjects: SubjectOption[]; onRemove: (assignment: Assignment) => void }) {
   if (!assignments.length) return <p className="rounded-md bg-slate-50 px-3 py-3 text-sm text-slate-500">No teaching assignments added yet.</p>;
   return (
@@ -218,8 +249,8 @@ function AssignmentTable({ assignments, classes, subjects, onRemove }: { assignm
             const schoolClass = classes.find((item) => item.id === assignment.classId);
             const subject = subjects.find((item) => item.id === assignment.subjectId);
             return (
-              <tr key={`${assignment.classId}-${assignment.subjectId}`}>
-                <td className="px-3 py-3">{schoolClass?.name ?? assignment.classId}</td>
+              <tr key={`${assignment.classId ?? assignment.className}-${assignment.subjectId}`}>
+                <td className="px-3 py-3">{schoolClass?.name ?? assignment.className ?? assignment.classId}</td>
                 <td className="px-3 py-3">{subject ? `${subject.code ? `${subject.code} - ` : ""}${subject.name}` : assignment.subjectId}</td>
                 <td className="px-3 py-3 text-right"><button type="button" onClick={() => onRemove(assignment)} className="rounded-md p-2 text-coral"><Trash2 className="h-4 w-4" /></button></td>
               </tr>
