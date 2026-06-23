@@ -3,10 +3,25 @@ from datetime import datetime, timedelta
 
 from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import create_access_token, get_jwt, get_jwt_identity, jwt_required
+from sqlalchemy import func, or_
+from sqlalchemy.exc import IntegrityError
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from app.extensions import db, limiter
-from app.models import PasswordResetCode, Role, Student, Teacher, User
+from app.models import (
+    AuditLog,
+    Message,
+    Notification,
+    PasswordResetCode,
+    Payment,
+    Receipt,
+    ReportCard,
+    ReportSignature,
+    Role,
+    Student,
+    Teacher,
+    User,
+)
 from app.services.audit import write_audit
 from app.services.email import send_password_reset_code
 from app.services.token_blocklist import revoke_token
@@ -220,7 +235,7 @@ def create_accounts_officer():
     phone = (data.get("phone") or "").strip() or None
     if not email or not first_name or not last_name:
         return jsonify({"error": "First name, last name, and email are required."}), 400
-    if User.query.filter_by(email=email).first():
+    if User.query.filter(func.lower(User.email) == email).first():
         return jsonify({"error": "Email already exists."}), 409
     role = Role.query.filter_by(name="Accounts Officer").first()
     if not role:
@@ -250,6 +265,62 @@ def create_accounts_officer():
         "defaultPassword": temporary_password,
         "temporaryPassword": temporary_password,
     }), 201
+
+
+def dependency_names(checks):
+    return [name for name, query in checks if query.first() is not None]
+
+
+def user_record_blockers(user_id):
+    blockers = []
+    for mapper in db.Model.registry.mappers:
+        model = mapper.class_
+        columns = model.__table__.columns
+        if "created_by_id" not in columns and "updated_by_id" not in columns:
+            continue
+        query = model.query
+        conditions = []
+        if "created_by_id" in columns:
+            conditions.append(model.created_by_id == user_id)
+        if "updated_by_id" in columns:
+            conditions.append(model.updated_by_id == user_id)
+        if conditions and query.filter(or_(*conditions)).first() is not None:
+            blockers.append(model.__tablename__)
+    return blockers
+
+
+@auth_bp.delete("/accounts/<int:user_id>")
+@jwt_required()
+@roles_required("Admin", "Super Admin")
+def delete_accounts_officer(user_id):
+    user = db.session.get(User, user_id)
+    if not user or not user.role or user.role.name != "Accounts Officer":
+        return jsonify({"error": "Accounts Officer account not found."}), 404
+    blockers = dependency_names(
+        [
+            ("payments recorded by this account", Payment.query.filter_by(recorded_by_id=user.id)),
+            ("receipts issued by this account", Receipt.query.filter_by(issued_by_id=user.id)),
+            ("messages", Message.query.filter((Message.sender_id == user.id) | (Message.recipient_id == user.id))),
+            ("approved report cards", ReportCard.query.filter_by(approved_by_id=user.id)),
+            ("report signatures", ReportSignature.query.filter_by(admin_id=user.id)),
+        ]
+    )
+    blockers.extend(user_record_blockers(user.id))
+    if blockers:
+        return jsonify({"error": f"This Accounts Officer has {', '.join(blockers)} and cannot be deleted. Suspend or deactivate the account instead."}), 409
+
+    email = user.email
+    try:
+        PasswordResetCode.query.filter_by(user_id=user.id).delete(synchronize_session=False)
+        Notification.query.filter_by(user_id=user.id).delete(synchronize_session=False)
+        AuditLog.query.filter_by(user_id=user.id).update({"user_id": None}, synchronize_session=False)
+        db.session.delete(user)
+        write_audit("accounts_officer_deleted", "User", user_id, {"email": email})
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        return jsonify({"error": "This Accounts Officer still has linked records and cannot be deleted. Suspend or deactivate the account instead."}), 409
+    return jsonify({"message": "Accounts Officer account deleted."})
 
 
 @auth_bp.post("/login")

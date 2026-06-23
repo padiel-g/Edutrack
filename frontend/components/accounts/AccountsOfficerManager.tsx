@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Trash2 } from "lucide-react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
@@ -49,6 +50,22 @@ export function AccountsOfficerManager() {
     }
   }
 
+  async function deleteOfficer(user: User) {
+    if (!window.confirm(`Delete ${user.name}'s Accounts Officer account? This only works when the account has no finance records.`)) return;
+    setLoading(true);
+    setError("");
+    setMessage("");
+    try {
+      await api(`/auth/accounts/${user.id}`, { method: "DELETE" });
+      setMessage("Accounts Officer account deleted.");
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to delete Accounts Officer account");
+    } finally {
+      setLoading(false);
+    }
+  }
+
   return (
     <div className="space-y-5">
       <Card>
@@ -70,9 +87,9 @@ export function AccountsOfficerManager() {
         {!items.length ? <p className="py-8 text-center text-sm text-slate-500">No Accounts Officer accounts found.</p> : (
           <div className="mt-3 overflow-x-auto">
             <table className="w-full min-w-[560px] text-left text-sm">
-              <thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr><th className="px-3 py-3">Name</th><th className="px-3 py-3">Email</th><th className="px-3 py-3">Status</th><th className="px-3 py-3">Last login</th></tr></thead>
+              <thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr><th className="px-3 py-3">Name</th><th className="px-3 py-3">Email</th><th className="px-3 py-3">Status</th><th className="px-3 py-3">Last login</th><th className="px-3 py-3 text-right">Actions</th></tr></thead>
               <tbody className="divide-y divide-slate-100">
-                {items.map((user) => <tr key={user.id}><td className="px-3 py-3 font-medium">{user.name}</td><td className="px-3 py-3">{user.email}</td><td className="px-3 py-3">{user.status}</td><td className="px-3 py-3 text-slate-500">{user.lastLoginAt?.slice(0, 16).replace("T", " ") ?? "Never"}</td></tr>)}
+                {items.map((user) => <tr key={user.id}><td className="px-3 py-3 font-medium">{user.name}</td><td className="px-3 py-3">{user.email}</td><td className="px-3 py-3">{user.status}</td><td className="px-3 py-3 text-slate-500">{user.lastLoginAt?.slice(0, 16).replace("T", " ") ?? "Never"}</td><td className="px-3 py-3 text-right"><button type="button" onClick={() => deleteOfficer(user)} disabled={loading} className="rounded-md p-2 text-coral hover:bg-red-50 disabled:opacity-50" title="Delete Accounts Officer account"><Trash2 className="h-4 w-4" /></button></td></tr>)}
               </tbody>
             </table>
           </div>
