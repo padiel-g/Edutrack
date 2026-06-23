@@ -9,7 +9,7 @@ type Subject = { id: number; code: string; name: string };
 type SchoolClass = {
   id: number;
   name: string;
-  gradeLevel: number;
+  gradeLevel: string;
   capacity: number;
   studentCount: number;
   isClassTeacher: boolean;
@@ -49,7 +49,7 @@ export function MyClassesManager() {
               <GraduationCap className="mx-auto h-12 w-12 text-slate-300" />
               <h2 className="mt-4 text-lg font-semibold">No classes assigned</h2>
               <p className="mt-1 max-w-md text-sm text-slate-500">
-                An administrator must assign Form 1 to Form 6 classes to your teacher profile.
+                An administrator must assign classes and subjects to your teacher profile.
               </p>
             </div>
           </div>
@@ -70,7 +70,7 @@ export function MyClassesManager() {
                 <div className="bg-slate-900 px-5 py-4 text-white">
                   <div className="flex items-start justify-between gap-3">
                     <div>
-                      <p className="text-xs uppercase tracking-wider text-slate-300">Grade {schoolClass.gradeLevel}</p>
+                      <p className="text-xs uppercase tracking-wider text-slate-300">{schoolClass.gradeLevel}</p>
                       <h2 className="mt-1 text-xl font-bold">{schoolClass.name}</h2>
                     </div>
                     {schoolClass.isClassTeacher ? (

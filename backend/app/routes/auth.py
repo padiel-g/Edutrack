@@ -1,14 +1,14 @@
 import secrets
 from datetime import datetime, timedelta
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import create_access_token, get_jwt, get_jwt_identity, jwt_required
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from app.extensions import db, limiter
 from app.models import PasswordResetCode, Role, Student, Teacher, User
 from app.services.audit import write_audit
-from app.services.email import send_password_reset_code_async
+from app.services.email import send_password_reset_code
 from app.services.token_blocklist import revoke_token
 from app.utils.credentials import generate_temporary_password, is_strong_password
 from app.utils.security import roles_required
@@ -72,6 +72,15 @@ def request_password_reset():
     user = User.query.filter_by(email=email).first()
     teacher = Teacher.query.filter_by(user_id=user.id).first() if user and user.role and user.role.name == "Teacher" else None
     if not user or not teacher or user.status != "Active" or not user.is_active:
+        current_app.logger.info(
+            "Teacher password reset skipped for %s: user=%s role=%s teacher=%s status=%s active=%s",
+            email or "<empty>",
+            bool(user),
+            user.role.name if user and user.role else None,
+            bool(teacher),
+            user.status if user else None,
+            user.is_active if user else None,
+        )
         return jsonify({"message": generic}), 200
 
     now = datetime.utcnow()
@@ -89,7 +98,13 @@ def request_password_reset():
     db.session.flush()
     write_audit("teacher_reset_requested", "User", user.id, {"delivery": "Email"})
     db.session.commit()
-    send_password_reset_code_async(user.email, code)
+    try:
+        send_password_reset_code(user.email, code)
+    except RuntimeError as error:
+        reset.used_at = datetime.utcnow()
+        db.session.commit()
+        current_app.logger.exception("Teacher password reset email delivery failed.")
+        return jsonify({"error": str(error)}), 503
     return jsonify({"message": generic}), 200
 
 

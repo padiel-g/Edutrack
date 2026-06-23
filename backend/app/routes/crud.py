@@ -147,7 +147,7 @@ WRITABLE_FIELDS = {
     },
     "parents": {"user_id", "occupation", "relationship"},
     "classes": {
-        "name", "gradeLevel", "capacity", "classTeacherId", "subjectIds",
+        "name", "gradeLevel", "stream", "academicYearId", "capacity", "classTeacherId", "subjectIds",
         "teacherIds", "teacherSubjectAssignments", "manualSubjects",
     },
     "subjects": {"code", "name", "stream"},
@@ -490,14 +490,19 @@ def create_class(data):
     name = (data.get("name") or "").strip()
     if not name:
         return jsonify({"error": "Class name is required."}), 400
-    if SchoolClass.query.filter_by(name=name).first():
-        return jsonify({"error": "A class with this name already exists."}), 409
 
+    grade_level = (data.get("gradeLevel") or "").strip()
+    if not grade_level:
+        return jsonify({"error": "Grade/Form level is required."}), 400
     try:
-        grade_level = int(data.get("gradeLevel"))
         capacity = int(data.get("capacity") or 35)
+        academic_year_id = int(data["academicYearId"]) if data.get("academicYearId") else None
     except (TypeError, ValueError):
-        return jsonify({"error": "Grade level and capacity must be valid numbers."}), 400
+        return jsonify({"error": "Capacity and academic year must use valid values."}), 400
+    if capacity <= 0:
+        return jsonify({"error": "Capacity must be greater than 0."}), 400
+    if SchoolClass.query.filter_by(name=name, academic_year_id=academic_year_id).first():
+        return jsonify({"error": "A class with this name already exists in the selected academic year."}), 409
 
     subject_ids = data.get("subjectIds") or []
     if not isinstance(subject_ids, list):
@@ -561,6 +566,8 @@ def create_class(data):
         name=name,
         grade_level=grade_level,
         capacity=capacity,
+        stream=(data.get("stream") or "").strip() or None,
+        academic_year_id=academic_year_id,
         teacher_id=class_teacher_id,
         subjects=subjects,
     )
@@ -655,6 +662,16 @@ def delete_resource(resource, item_id):
     obj = db.session.get(model, item_id) if model else None
     if not obj:
         return jsonify({"error": "Not found"}), 404
+    if resource == "parents":
+        parent_user = obj.user
+        for student in Student.query.filter_by(parent_id=obj.id).all():
+            student.parent_id = None
+            student.parent_token_version += 1
+        obj.children.clear()
+        if parent_user:
+            parent_user.is_active = False
+            parent_user.status = "Inactive"
+            parent_user.token_version += 1
     write_audit(f"{resource.rstrip('s')}_deleted", model.__name__, obj.id)
     db.session.delete(obj)
     try:

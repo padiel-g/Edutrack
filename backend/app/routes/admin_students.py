@@ -6,20 +6,64 @@ from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db, limiter
-from app.models import AcademicYear, Parent, SchoolClass, Student, StudentFeeAccount, StudentSubject, Subject, User
+from app.models import (
+    AcademicYear,
+    Attendance,
+    AuditLog,
+    ContinuousAssessment,
+    ExamResult,
+    FeeReminder,
+    FinalResult,
+    Invoice,
+    Message,
+    Notification,
+    Parent,
+    PasswordResetCode,
+    Payment,
+    Receipt,
+    ReportCard,
+    SchoolClass,
+    Student,
+    StudentFeeAccount,
+    StudentResult,
+    StudentSubject,
+    Subject,
+    Submission,
+    User,
+)
 from app.services.audit import write_audit
 from app.services.numbering import next_registration_number
 from app.utils.security import roles_required
 from app.utils.credentials import generate_temporary_password, is_strong_password
-
-GRADE_FORMS = ["Form 1", "Form 2", "Form 3", "Form 4", "Form 5", "Form 6"]
-CLASS_STREAMS = ["Commercials", "Sciences", "Arts", "General", "Technical", "Agriculture"]
 
 admin_students_bp = Blueprint("admin_students", __name__)
 
 
 def parse_date(value):
     return date.fromisoformat(value) if value else None
+
+
+def dependency_names(checks):
+    return [name for name, query in checks if query.first() is not None]
+
+
+def delete_linked_user_if_unused(user):
+    if not user:
+        return
+    blockers = dependency_names(
+        [
+            ("messages", Message.query.filter((Message.sender_id == user.id) | (Message.recipient_id == user.id))),
+            ("payments recorded by this account", Payment.query.filter_by(recorded_by_id=user.id)),
+            ("receipts issued by this account", Receipt.query.filter_by(issued_by_id=user.id)),
+            ("approved report cards", ReportCard.query.filter_by(approved_by_id=user.id)),
+        ]
+    )
+    if blockers:
+        raise ValueError(f"The linked login account still has {', '.join(blockers)} and cannot be deleted.")
+    PasswordResetCode.query.filter_by(user_id=user.id).delete(synchronize_session=False)
+    Notification.query.filter_by(user_id=user.id).delete(synchronize_session=False)
+    AuditLog.query.filter_by(user_id=user.id).update({"user_id": None}, synchronize_session=False)
+    db.session.delete(user)
 
 
 @admin_students_bp.get("/students")
@@ -62,15 +106,19 @@ def create_student():
     if not first_name or not last_name:
         return jsonify({"error": "First name and last name are required."}), 400
 
-    grade_form = (data.get("gradeForm") or "").strip()
-    class_stream = (data.get("classStream") or "").strip()
+    class_id = data.get("classId")
     number_of_subjects = data.get("numberOfSubjects")
     raw_subject_ids = data.get("selectedSubjectIds") or []
 
-    if not grade_form:
-        return jsonify({"error": "Grade/Form is required."}), 400
-    if not class_stream:
-        return jsonify({"error": "Class/Stream is required."}), 400
+    try:
+        class_id = int(class_id)
+    except (TypeError, ValueError):
+        return jsonify({"error": "Select a class created under Admin Classes before registering a student."}), 400
+    school_class = db.session.get(SchoolClass, class_id)
+    if not school_class:
+        return jsonify({"error": "Selected class was not found."}), 404
+    grade_form = school_class.grade_level
+    class_stream = school_class.stream or school_class.name
     try:
         number_of_subjects = int(number_of_subjects) if number_of_subjects is not None else 0
     except (TypeError, ValueError):
@@ -106,7 +154,8 @@ def create_student():
         birth_certificate_number=(data.get("birthCertificateNumber") or "").strip() or None,
         national_id=(data.get("nationalId") or "").strip() or None,
         class_type=(data.get("classType") or "").strip() or None,
-        academic_year_id=data.get("academicYearId"),
+        class_id=school_class.id,
+        academic_year_id=data.get("academicYearId") or school_class.academic_year_id,
         parent_id=data.get("parentId"),
         address=data.get("address"),
         phone=data.get("phone"),
@@ -224,17 +273,43 @@ def change_student_status(student_id):
 @admin_students_bp.delete("/students/<int:student_id>")
 @jwt_required()
 @roles_required("Admin", "Super Admin")
-def deactivate_student(student_id):
+def delete_student(student_id):
     student = db.session.get(Student, student_id)
     if not student:
         return jsonify({"error": "Student not found"}), 404
-    student.status = "inactive"
-    student.parent_token_version += 1
-    if student.user:
-        student.user.token_version += 1
-    write_audit("student_deactivated", "Student", student.id, {"registrationNumber": student.registration_number})
-    db.session.commit()
-    return jsonify({"message": "Student deactivated", "item": student.to_dict()})
+    blockers = dependency_names(
+        [
+            ("attendance", Attendance.query.filter_by(student_id=student.id)),
+            ("continuous assessments", ContinuousAssessment.query.filter_by(student_id=student.id)),
+            ("exam results", ExamResult.query.filter_by(student_id=student.id)),
+            ("final results", FinalResult.query.filter_by(student_id=student.id)),
+            ("student results", StudentResult.query.filter_by(student_id=student.id)),
+            ("submissions", Submission.query.filter_by(student_id=student.id)),
+            ("invoices", Invoice.query.filter_by(student_id=student.id)),
+            ("payments", Payment.query.filter_by(student_id=student.id)),
+            ("receipts", Receipt.query.filter_by(student_id=student.id)),
+            ("fee reminders", FeeReminder.query.filter_by(student_id=student.id)),
+            ("report cards", ReportCard.query.filter_by(student_id=student.id)),
+        ]
+    )
+    if blockers:
+        return jsonify({"error": f"This student has {', '.join(blockers)} and cannot be deleted. Deactivate the account instead."}), 409
+
+    user = student.user
+    registration_number = student.registration_number
+    try:
+        student.parents.clear()
+        StudentSubject.query.filter_by(student_id=student.id).delete(synchronize_session=False)
+        if student.fee_account:
+            db.session.delete(student.fee_account)
+        db.session.delete(student)
+        delete_linked_user_if_unused(user)
+        write_audit("student_deleted", "Student", student_id, {"registrationNumber": registration_number})
+        db.session.commit()
+    except (IntegrityError, ValueError) as error:
+        db.session.rollback()
+        return jsonify({"error": str(error) or "This student still has records and cannot be deleted."}), 409
+    return jsonify({"message": "Student account deleted."})
 
 
 @admin_students_bp.get("/students/<int:student_id>/profile")
@@ -263,13 +338,14 @@ def build_profile(student):
 @jwt_required()
 @roles_required("Admin", "Super Admin")
 def student_form_options():
+    classes = SchoolClass.query.order_by(SchoolClass.name).all()
     return jsonify(
         {
-            "classes": [item.to_dict() for item in SchoolClass.query.order_by(SchoolClass.name).all()],
+            "classes": [item.to_dict() for item in classes],
             "academicYears": [{"id": item.id, "name": item.name} for item in AcademicYear.query.order_by(AcademicYear.name.desc()).all()],
             "parents": [item.to_dict() for item in Parent.query.order_by(Parent.id.desc()).all()],
             "subjects": [item.to_dict() for item in Subject.query.order_by(Subject.stream, Subject.name).all()],
-            "gradeForms": GRADE_FORMS,
-            "classStreams": CLASS_STREAMS,
+            "gradeForms": sorted({item.grade_level for item in classes if item.grade_level}),
+            "classStreams": sorted({item.stream for item in classes if item.stream}),
         }
     )

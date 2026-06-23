@@ -8,7 +8,30 @@ from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 
 from app.extensions import db, limiter
-from app.models import Role, SchoolClass, Subject, Teacher, User, teacher_classes, teacher_subjects
+from app.models import (
+    Assignment,
+    Attendance,
+    AuditLog,
+    ClassRegister,
+    ExamTimetable,
+    LearningMaterial,
+    Message,
+    Notification,
+    PasswordResetCode,
+    Payment,
+    Receipt,
+    ReportCard,
+    ReportSignature,
+    Role,
+    SchoolClass,
+    StudentResult,
+    Subject,
+    Teacher,
+    Timetable,
+    User,
+    teacher_classes,
+    teacher_subjects,
+)
 from app.services.audit import write_audit
 from app.utils.security import roles_required
 
@@ -17,6 +40,30 @@ admin_teachers_bp = Blueprint("admin_teachers", __name__)
 
 def parse_date(value):
     return date.fromisoformat(value) if value else None
+
+
+def dependency_names(checks):
+    return [name for name, query in checks if query.first() is not None]
+
+
+def delete_linked_user_if_unused(user):
+    if not user:
+        return
+    blockers = dependency_names(
+        [
+            ("messages", Message.query.filter((Message.sender_id == user.id) | (Message.recipient_id == user.id))),
+            ("payments recorded by this account", Payment.query.filter_by(recorded_by_id=user.id)),
+            ("receipts issued by this account", Receipt.query.filter_by(issued_by_id=user.id)),
+            ("approved report cards", ReportCard.query.filter_by(approved_by_id=user.id)),
+            ("report signatures", ReportSignature.query.filter_by(admin_id=user.id)),
+        ]
+    )
+    if blockers:
+        raise ValueError(f"The linked login account still has {', '.join(blockers)} and cannot be deleted.")
+    PasswordResetCode.query.filter_by(user_id=user.id).delete(synchronize_session=False)
+    Notification.query.filter_by(user_id=user.id).delete(synchronize_session=False)
+    AuditLog.query.filter_by(user_id=user.id).update({"user_id": None}, synchronize_session=False)
+    db.session.delete(user)
 
 
 def temporary_password(length=14):
@@ -37,22 +84,42 @@ def next_employee_number():
     return f"TCH-{(latest.id + 1 if latest else 1):05d}"
 
 
-def assignment_ids(data):
+def assignment_payloads(data):
+    raw_assignments = data.get("assignments")
+    if isinstance(raw_assignments, list):
+        assignments = []
+        seen = set()
+        for item in raw_assignments:
+            try:
+                class_id = int(item.get("classId"))
+                subject_id = int(item.get("subjectId"))
+            except (AttributeError, TypeError, ValueError):
+                raise ValueError("Each teaching assignment needs a valid class and subject.")
+            key = (class_id, subject_id)
+            if key in seen:
+                raise ValueError("Duplicate class-subject assignments are not allowed for the same teacher.")
+            seen.add(key)
+            assignments.append({"classId": class_id, "subjectId": subject_id})
+        return assignments
     try:
         subject_ids = list(dict.fromkeys(int(item) for item in (data.get("subjectIds") or [])))
         class_ids = list(dict.fromkeys(int(item) for item in (data.get("classIds") or [])))
     except (TypeError, ValueError):
         raise ValueError("Subject and class IDs must be integers.")
-    return subject_ids, class_ids
+    return [{"classId": class_id, "subjectId": subject_id} for class_id in class_ids for subject_id in subject_ids]
 
 
-def replace_assignments(teacher, subject_ids, class_ids):
+def replace_assignments(teacher, assignments):
     previous = [
         {"id": subject.id, "code": subject.code, "name": subject.name}
         for subject in sorted(teacher.subjects, key=lambda item: item.name)
     ]
+    class_ids = list(dict.fromkeys(item["classId"] for item in assignments))
+    subject_ids = list(dict.fromkeys(item["subjectId"] for item in assignments))
     subjects = Subject.query.filter(Subject.id.in_(subject_ids)).all() if subject_ids else []
     classes = SchoolClass.query.filter(SchoolClass.id.in_(class_ids)).all() if class_ids else []
+    subjects_by_id = {subject.id: subject for subject in subjects}
+    classes_by_id = {school_class.id: school_class for school_class in classes}
     if len(subjects) != len(subject_ids):
         raise ValueError("One or more selected subjects do not exist.")
     if len(classes) != len(class_ids):
@@ -61,25 +128,16 @@ def replace_assignments(teacher, subject_ids, class_ids):
     # Manage the association rows through SQL only. Mixing a manual DELETE with
     # relationship assignment makes SQLAlchemy try to delete the same rows twice.
     db.session.execute(teacher_subjects.delete().where(teacher_subjects.c.teacher_id == teacher.id))
-    if classes:
-        for subject in subjects:
-            for school_class in classes:
-                db.session.execute(
-                    teacher_subjects.insert().values(
-                        teacher_id=teacher.id,
-                        subject_id=subject.id,
-                        class_id=school_class.id,
-                    )
-                )
-    else:
-        for subject in subjects:
-            db.session.execute(
-                teacher_subjects.insert().values(
-                    teacher_id=teacher.id,
-                    subject_id=subject.id,
-                    class_id=None,
-                )
+    for assignment in assignments:
+        school_class = classes_by_id[assignment["classId"]]
+        db.session.execute(
+            teacher_subjects.insert().values(
+                teacher_id=teacher.id,
+                subject_id=assignment["subjectId"],
+                class_id=school_class.id,
+                academic_year_id=school_class.academic_year_id,
             )
+        )
 
     # Persist class assignments independently of subjects so the relationship
     # holds even before a subject has been assigned.
@@ -88,7 +146,7 @@ def replace_assignments(teacher, subject_ids, class_ids):
             db.select(teacher_classes.c.class_id).where(teacher_classes.c.teacher_id == teacher.id)
         )
     )
-    wanted_class_ids = {school_class.id for school_class in classes}
+    wanted_class_ids = set(class_ids)
     removed_class_ids = previous_class_ids - wanted_class_ids
 
     # If a class is no longer taught by this teacher, they can no longer be its
@@ -111,7 +169,7 @@ def replace_assignments(teacher, subject_ids, class_ids):
     db.session.expire(teacher, ["subjects", "assigned_classes"])
     return (
         previous,
-        [{"id": subject.id, "code": subject.code, "name": subject.name} for subject in sorted(subjects, key=lambda item: item.name)],
+        [{"id": subject.id, "code": subject.code, "name": subject.name} for subject in sorted(subjects_by_id.values(), key=lambda item: item.name)],
         sorted(previous_class_ids),
         sorted(wanted_class_ids),
     )
@@ -168,7 +226,8 @@ def create_teacher():
     if not role:
         return jsonify({"error": "Teacher role does not exist."}), 400
     try:
-        subject_ids, class_ids = assignment_ids(data)
+        assignments = assignment_payloads(data)
+        class_teacher_id = int(data["classTeacherId"]) if data.get("classTeacherId") else None
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
 
@@ -212,7 +271,15 @@ def create_teacher():
     try:
         db.session.add(teacher)
         db.session.flush()
-        _, assigned, _, assigned_class_ids = replace_assignments(teacher, subject_ids, class_ids)
+        _, assigned, _, assigned_class_ids = replace_assignments(teacher, assignments)
+        if class_teacher_id:
+            school_class = db.session.get(SchoolClass, class_teacher_id)
+            if not school_class:
+                raise ValueError("Selected class teacher class does not exist.")
+            school_class.teacher_id = teacher.id
+            if school_class.id not in assigned_class_ids:
+                db.session.execute(teacher_classes.insert().values(teacher_id=teacher.id, class_id=school_class.id))
+                assigned_class_ids = sorted([*assigned_class_ids, school_class.id])
         write_audit(
             "teacher_account_created",
             "Teacher",
@@ -253,7 +320,8 @@ def update_teacher(teacher_id):
         return jsonify({"error": "Teacher not found."}), 404
     data = request.get_json() or {}
     try:
-        subject_ids, class_ids = assignment_ids(data)
+        assignments = assignment_payloads(data)
+        class_teacher_id = int(data["classTeacherId"]) if data.get("classTeacherId") else None
     except ValueError as error:
         return jsonify({"error": str(error)}), 400
 
@@ -279,8 +347,17 @@ def update_teacher(teacher_id):
     teacher.user.phone = teacher.phone
     try:
         previous, current, previous_class_ids, current_class_ids = replace_assignments(
-            teacher, subject_ids, class_ids
+            teacher, assignments
         )
+        SchoolClass.query.filter_by(teacher_id=teacher.id).update({"teacher_id": None}, synchronize_session=False)
+        if class_teacher_id:
+            school_class = db.session.get(SchoolClass, class_teacher_id)
+            if not school_class:
+                raise ValueError("Selected class teacher class does not exist.")
+            school_class.teacher_id = teacher.id
+            if school_class.id not in current_class_ids:
+                db.session.execute(teacher_classes.insert().values(teacher_id=teacher.id, class_id=school_class.id))
+                current_class_ids = sorted([*current_class_ids, school_class.id])
         write_audit(
             "teacher_profile_updated",
             "Teacher",
@@ -327,13 +404,35 @@ def delete_teacher(teacher_id):
     teacher = db.session.get(Teacher, teacher_id)
     if not teacher:
         return jsonify({"error": "Teacher not found."}), 404
-    teacher.user.status = "Inactive"
-    teacher.user.is_active = False
-    teacher.user.token_version += 1
-    teacher.employment_status = "Inactive"
-    write_audit("teacher_account_deactivated", "Teacher", teacher.id)
-    db.session.commit()
-    return jsonify({"message": "Teacher account deactivated.", "item": teacher.to_dict()})
+    blockers = dependency_names(
+        [
+            ("timetable entries", Timetable.query.filter_by(teacher_id=teacher.id)),
+            ("exam timetable entries", ExamTimetable.query.filter_by(teacher_id=teacher.id)),
+            ("attendance", Attendance.query.filter_by(teacher_id=teacher.id)),
+            ("class registers", ClassRegister.query.filter_by(teacher_id=teacher.id)),
+            ("student results", StudentResult.query.filter_by(teacher_id=teacher.id)),
+            ("assignments", Assignment.query.filter_by(teacher_id=teacher.id)),
+            ("learning materials", LearningMaterial.query.filter_by(teacher_id=teacher.id)),
+            ("report cards", ReportCard.query.filter_by(class_teacher_id=teacher.id)),
+        ]
+    )
+    if blockers:
+        return jsonify({"error": f"This teacher has {', '.join(blockers)} and cannot be deleted. Suspend or deactivate the account instead."}), 409
+
+    user = teacher.user
+    employee_number = teacher.employee_number
+    try:
+        SchoolClass.query.filter_by(teacher_id=teacher.id).update({"teacher_id": None}, synchronize_session=False)
+        db.session.execute(teacher_subjects.delete().where(teacher_subjects.c.teacher_id == teacher.id))
+        db.session.execute(teacher_classes.delete().where(teacher_classes.c.teacher_id == teacher.id))
+        db.session.delete(teacher)
+        delete_linked_user_if_unused(user)
+        write_audit("teacher_account_deleted", "Teacher", teacher_id, {"employeeNumber": employee_number})
+        db.session.commit()
+    except (IntegrityError, ValueError) as error:
+        db.session.rollback()
+        return jsonify({"error": str(error) or "This teacher still has records and cannot be deleted."}), 409
+    return jsonify({"message": "Teacher account deleted."})
 
 
 @admin_teachers_bp.get("/teacher-form-options")
@@ -343,7 +442,17 @@ def teacher_form_options():
     return jsonify(
         {
             "subjects": [item.to_dict() for item in Subject.query.order_by(Subject.name).all()],
-            "classes": [{"id": item.id, "name": item.name} for item in SchoolClass.query.order_by(SchoolClass.name).all()],
+            "classes": [
+                {
+                    "id": item.id,
+                    "name": item.name,
+                    "gradeLevel": item.grade_level,
+                    "stream": item.stream,
+                    "classTeacher": item.class_teacher.to_dict()["name"] if item.class_teacher else None,
+                    "classTeacherId": item.teacher_id,
+                }
+                for item in SchoolClass.query.order_by(SchoolClass.name).all()
+            ],
         }
     )
 

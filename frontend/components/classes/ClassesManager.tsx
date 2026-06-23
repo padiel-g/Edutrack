@@ -1,98 +1,91 @@
 "use client";
 
-import { BookOpen, Check, ChevronDown, Plus, Trash2, Users } from "lucide-react";
+import { BookOpen, CalendarDays, Eye, Plus, Search, Trash2, Users } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
 
-type Subject = { id: number; code: string; name: string };
-type Teacher = { id: number; name: string; employeeNumber: string };
+type AcademicYear = { id: number; name: string };
 type SchoolClass = {
-  id: number; name: string; gradeLevel: number; capacity: number;
-  subjects: Subject[]; teachers?: Teacher[];
-  classTeacherId?: number | null;
+  id: number;
+  name: string;
+  gradeLevel: string;
+  stream?: string | null;
+  capacity: number;
+  academicYearId?: number | null;
+  academicYear?: string | null;
+  studentCount: number;
+  subjectCount: number;
+  teacherCount: number;
+  enrollment: string;
+  classTeacher?: { id: number; name: string } | null;
 };
-type ManualSubject = { name: string; code: string; stream: string };
+type ClassDetail = {
+  item: SchoolClass;
+  students: { id: number; registrationNumber: string; name: string; gender?: string; parent?: string | null; status: string }[];
+  subjects: { id: number; code: string; name: string; subjectType?: string | null }[];
+  teachers: { teacherId: number; teacherName: string; subjectName: string; subjectCode: string; department?: string | null; email: string; phone?: string | null }[];
+  classTeacher?: { id: number; name: string; email?: string; phone?: string } | null;
+  attendanceSummary: { records: number; present: number; attendanceRate?: number | null };
+  performanceSummary: { averageScore?: number | null; examResultCount: number; finalResultCount: number };
+};
+
+const gradeOptions = ["ECD", "Grade 1", "Grade 2", "Grade 3", "Grade 4", "Grade 5", "Grade 6", "Grade 7", "Form 1", "Form 2", "Form 3", "Form 4", "Lower Six", "Upper Six", "Custom"];
+const tabs = ["Overview", "Students", "Subjects", "Teachers", "Attendance Summary", "Performance Summary"] as const;
 
 export function ClassesManager() {
   const [classes, setClasses] = useState<SchoolClass[]>([]);
-  const [subjects, setSubjects] = useState<Subject[]>([]);
-  const [teachers, setTeachers] = useState<Teacher[]>([]);
-  const [selectedClassId, setSelectedClassId] = useState<number | null>(null);
-  const [selectedTeacherIds, setSelectedTeacherIds] = useState<number[]>([]);
-  const [classTeacherId, setClassTeacherId] = useState("");
-  const [selectedSubjectIds, setSelectedSubjectIds] = useState<number[]>([]);
-  const [newClassTeacherIds, setNewClassTeacherIds] = useState<number[]>([]);
-  const [teacherSubjectAssignments, setTeacherSubjectAssignments] = useState<Record<number, number[]>>({});
-  const [newClassTeacherId, setNewClassTeacherId] = useState("");
-  const [manualSubjects, setManualSubjects] = useState<ManualSubject[]>([]);
+  const [years, setYears] = useState<AcademicYear[]>([]);
+  const [detail, setDetail] = useState<ClassDetail | null>(null);
+  const [activeTab, setActiveTab] = useState<(typeof tabs)[number]>("Overview");
   const [showAddClass, setShowAddClass] = useState(false);
+  const [gradeLevel, setGradeLevel] = useState("");
+  const [customGrade, setCustomGrade] = useState("");
+  const [search, setSearch] = useState("");
+  const [filterGrade, setFilterGrade] = useState("");
+  const [filterStream, setFilterStream] = useState("");
+  const [filterYear, setFilterYear] = useState("");
   const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
   const [saving, setSaving] = useState(false);
-  const [deleting, setDeleting] = useState(false);
+  const [deletingId, setDeletingId] = useState<number | null>(null);
 
-  const selectedClass = useMemo(
-    () => classes.find((item) => item.id === selectedClassId) ?? null,
-    [classes, selectedClassId]
+  const streamOptions = useMemo(
+    () => Array.from(new Set(classes.map((item) => item.stream).filter(Boolean) as string[])).sort(),
+    [classes]
+  );
+  const classGradeOptions = useMemo(
+    () => Array.from(new Set([...gradeOptions.filter((item) => item !== "Custom"), ...classes.map((item) => item.gradeLevel)])).sort(),
+    [classes]
   );
 
-  async function load(preferredClassId?: number) {
-    const [classResponse, subjectResponse, teacherResponse] = await Promise.all([
-      api<{ items: SchoolClass[] }>("/classes?perPage=100"),
-      api<{ items: Subject[] }>("/subjects?perPage=100"),
-      api<{ items: Teacher[] }>("/admin/teachers?perPage=100&status=Active")
+  async function load() {
+    const [classResponse, yearResponse] = await Promise.all([
+      api<{ items: SchoolClass[] }>("/admin/classes?perPage=100"),
+      api<{ items: AcademicYear[] }>("/academic-years?perPage=100"),
     ]);
-    const ordered = [...classResponse.items].sort((a, b) => a.gradeLevel - b.gradeLevel || a.name.localeCompare(b.name));
-    setClasses(ordered);
-    setSubjects(subjectResponse.items);
-    setTeachers(teacherResponse.items);
-    const nextId = preferredClassId ?? selectedClassId ?? ordered[0]?.id ?? null;
-    setSelectedClassId(nextId);
-    const active = ordered.find((item) => item.id === nextId);
-    setSelectedTeacherIds(active?.teachers?.map((teacher) => teacher.id) ?? []);
-    setClassTeacherId(active?.classTeacherId ? String(active.classTeacherId) : "");
+    setClasses(classResponse.items);
+    setYears(yearResponse.items);
   }
 
   useEffect(() => {
     load().catch((err) => setError(err instanceof Error ? err.message : "Unable to load classes"));
   }, []);
 
-  function selectClass(schoolClass: SchoolClass) {
-    setSelectedClassId(schoolClass.id);
-    setSelectedTeacherIds(schoolClass.teachers?.map((teacher) => teacher.id) ?? []);
-    setClassTeacherId(schoolClass.classTeacherId ? String(schoolClass.classTeacherId) : "");
+  async function applyFilters() {
     setError("");
-  }
-
-  function toggleTeacher(teacherId: number) {
-    setSelectedTeacherIds((current) =>
-      current.includes(teacherId) ? current.filter((id) => id !== teacherId) : [...current, teacherId]
-    );
-  }
-
-  async function saveAssignments() {
-    if (!selectedClass) return;
-    setSaving(true);
-    setError("");
+    const query = new URLSearchParams();
+    if (search) query.set("search", search);
+    if (filterGrade) query.set("gradeLevel", filterGrade);
+    if (filterStream) query.set("stream", filterStream);
+    if (filterYear) query.set("academicYearId", filterYear);
     try {
-      const finalTeacherIds = classTeacherId
-        ? Array.from(new Set([...selectedTeacherIds, Number(classTeacherId)]))
-        : selectedTeacherIds;
-      await api(`/admin/classes/${selectedClass.id}/class-teacher`, {
-        method: "PUT",
-        body: JSON.stringify({ teacherId: classTeacherId ? Number(classTeacherId) : null })
-      });
-      await api(`/admin/classes/${selectedClass.id}/teachers`, {
-        method: "PUT",
-        body: JSON.stringify({ teacherIds: finalTeacherIds })
-      });
-      await load(selectedClass.id);
+      const response = await api<{ items: SchoolClass[] }>(`/admin/classes?${query}`);
+      setClasses(response.items);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to save teacher assignments");
-    } finally {
-      setSaving(false);
+      setError(err instanceof Error ? err.message : "Unable to filter classes");
     }
   }
 
@@ -100,33 +93,27 @@ export function ClassesManager() {
     event.preventDefault();
     setSaving(true);
     setError("");
+    setMessage("");
     const formElement = event.currentTarget;
     const form = new FormData(formElement);
+    const selectedGrade = gradeLevel === "Custom" ? customGrade.trim() : gradeLevel;
     try {
-      const response = await api<{ item: SchoolClass }>("/classes", {
+      await api<{ item: SchoolClass }>("/admin/classes", {
         method: "POST",
         body: JSON.stringify({
           name: form.get("name"),
-          gradeLevel: Number(form.get("gradeLevel")),
-          capacity: Number(form.get("capacity")),
-          subjectIds: selectedSubjectIds,
-          teacherIds: newClassTeacherIds,
-          classTeacherId: newClassTeacherId ? Number(newClassTeacherId) : null,
-          teacherSubjectAssignments: newClassTeacherIds.map((teacherId) => ({
-            teacherId,
-            subjectIds: teacherSubjectAssignments[teacherId] ?? []
-          })),
-          manualSubjects: manualSubjects.filter((item) => item.name.trim() || item.code.trim())
+          gradeLevel: selectedGrade,
+          stream: form.get("stream"),
+          capacity: Number(form.get("capacity") || 35),
+          academicYearId: Number(form.get("academicYearId")),
         })
       });
       formElement.reset();
-      setSelectedSubjectIds([]);
-      setNewClassTeacherIds([]);
-      setTeacherSubjectAssignments({});
-      setNewClassTeacherId("");
-      setManualSubjects([]);
+      setGradeLevel("");
+      setCustomGrade("");
       setShowAddClass(false);
-      await load(response.item.id);
+      setMessage("Class created successfully.");
+      await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to create class");
     } finally {
@@ -134,232 +121,198 @@ export function ClassesManager() {
     }
   }
 
-  async function deleteClass() {
-    if (!selectedClass || !window.confirm(`Delete ${selectedClass.name}? This cannot be undone.`)) return;
-    setDeleting(true);
+  async function openDetail(classId: number) {
     setError("");
     try {
-      await api(`/classes/${selectedClass.id}`, { method: "DELETE" });
-      const remaining = classes.filter((item) => item.id !== selectedClass.id);
-      setClasses(remaining);
-      const next = remaining[0] ?? null;
-      setSelectedClassId(next?.id ?? null);
-      setSelectedTeacherIds(next?.teachers?.map((teacher) => teacher.id) ?? []);
-      setClassTeacherId(next?.classTeacherId ? String(next.classTeacherId) : "");
+      const response = await api<ClassDetail>(`/admin/classes/${classId}`);
+      setDetail(response);
+      setActiveTab("Overview");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to load class details");
+    }
+  }
+
+  async function deleteClass(schoolClass: SchoolClass) {
+    if (!window.confirm(`Delete ${schoolClass.name}? This only works if no students are assigned.`)) return;
+    setDeletingId(schoolClass.id);
+    setError("");
+    setMessage("");
+    try {
+      await api(`/admin/classes/${schoolClass.id}`, { method: "DELETE" });
+      setClasses((current) => current.filter((item) => item.id !== schoolClass.id));
+      if (detail?.item.id === schoolClass.id) setDetail(null);
+      setMessage("Class deleted successfully.");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to delete class");
     } finally {
-      setDeleting(false);
+      setDeletingId(null);
     }
   }
 
   return (
     <div className="space-y-5">
-      <div className="grid gap-5 xl:grid-cols-[300px_1fr]">
-        <Card className="h-fit">
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="text-lg font-semibold">School Classes</h2>
-              <p className="mt-1 text-xs text-slate-500">{classes.length} classes available</p>
-            </div>
-            <button onClick={() => setShowAddClass((value) => !value)} className="grid h-9 w-9 place-items-center rounded-lg bg-brand text-white" aria-label="Add class">
-              <Plus className="h-4 w-4" />
-            </button>
+      <Card className="space-y-4">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+          <div>
+            <h2 className="text-lg font-semibold">Classes</h2>
+            <p className="text-sm text-slate-500">View classes created by Admin and monitor students, subjects, teachers, and class teachers.</p>
           </div>
-          <div className="mt-4 space-y-2">
-            {!classes.length ? <p className="rounded-lg bg-slate-50 p-4 text-sm text-slate-500">No classes found. Add Form 1 to Form 6 to begin.</p> : null}
-            {classes.map((schoolClass) => (
-              <button
-                key={schoolClass.id}
-                onClick={() => selectClass(schoolClass)}
-                className={`w-full rounded-xl border p-3 text-left transition ${selectedClassId === schoolClass.id ? "border-brand bg-teal-50" : "border-slate-200 hover:border-slate-300"}`}
-              >
-                <div className="flex items-center justify-between">
-                  <span className="font-semibold">{schoolClass.name}</span>
-                  <ChevronDown className={`h-4 w-4 ${selectedClassId === schoolClass.id ? "-rotate-90 text-brand" : "text-slate-400"}`} />
-                </div>
-                <div className="mt-2 flex gap-3 text-xs text-slate-500">
-                  <span>{schoolClass.teachers?.length ?? 0} teachers</span>
-                  <span>{schoolClass.subjects?.length ?? 0} subjects</span>
-                </div>
-              </button>
-            ))}
+          <Button onClick={() => setShowAddClass((value) => !value)}><Plus className="h-4 w-4" /> Add Class</Button>
+        </div>
+        <div className="grid gap-3 lg:grid-cols-[1fr_180px_180px_180px_120px]">
+          <div className="relative">
+            <Search className="absolute left-3 top-3 h-4 w-4 text-slate-400" />
+            <Input className="pl-9" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search class name" />
           </div>
-        </Card>
-
-        <Card>
-          {!selectedClass ? (
-            <div className="grid min-h-72 place-items-center text-center">
-              <div><BookOpen className="mx-auto h-10 w-10 text-slate-300" /><p className="mt-3 text-slate-500">Select or add a class to manage its teachers.</p></div>
-            </div>
-          ) : (
-            <div>
-              <div className="flex flex-wrap items-start justify-between gap-3 border-b border-slate-100 pb-5">
-                <div>
-                  <p className="text-xs font-semibold uppercase tracking-wider text-brand">Class management</p>
-                  <h2 className="mt-1 text-2xl font-bold">{selectedClass.name}</h2>
-                  <p className="mt-1 text-sm text-slate-500">Grade {selectedClass.gradeLevel} · Capacity {selectedClass.capacity}</p>
-                </div>
-                <div className="flex items-center gap-3">
-                  <div className="rounded-xl bg-slate-50 px-4 py-3 text-right">
-                    <p className="text-xs text-slate-500">Teaching staff</p>
-                    <p className="text-xl font-bold">{selectedTeacherIds.length}</p>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={deleteClass}
-                    disabled={deleting}
-                    className="inline-flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-semibold text-red-600 hover:bg-red-50 disabled:opacity-50"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                    {deleting ? "Deleting..." : "Delete Class"}
-                  </button>
-                </div>
-              </div>
-
-              <div className="mt-5 grid gap-6 lg:grid-cols-[1fr_300px]">
-                <section>
-                  <div className="flex items-center gap-2"><Users className="h-5 w-5 text-brand" /><h3 className="font-semibold">Assign teachers</h3></div>
-                  <p className="mt-1 text-sm text-slate-500">Choose all teachers who teach {selectedClass.name}.</p>
-                  <div className="mt-4 grid gap-2 sm:grid-cols-2">
-                    {teachers.map((teacher) => {
-                      const checked = selectedTeacherIds.includes(teacher.id) || classTeacherId === String(teacher.id);
-                      return (
-                        <button key={teacher.id} type="button" onClick={() => toggleTeacher(teacher.id)} className={`flex items-center gap-3 rounded-xl border p-3 text-left ${checked ? "border-brand bg-teal-50" : "border-slate-200"}`}>
-                          <span className={`grid h-5 w-5 place-items-center rounded border ${checked ? "border-brand bg-brand text-white" : "border-slate-300"}`}>{checked ? <Check className="h-3.5 w-3.5" /> : null}</span>
-                          <span><span className="block text-sm font-semibold">{teacher.name}</span><span className="text-xs text-slate-500">{teacher.employeeNumber}</span></span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </section>
-
-                <section className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                  <h3 className="font-semibold">Class Teacher</h3>
-                  <p className="mt-1 text-xs text-slate-500">Only one Class Teacher can be selected.</p>
-                  <select value={classTeacherId} onChange={(event) => setClassTeacherId(event.target.value)} className="mt-4 h-11 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm">
-                    <option value="">Not assigned</option>
-                    {teachers.map((teacher) => <option key={teacher.id} value={teacher.id}>{teacher.employeeNumber} - {teacher.name}</option>)}
-                  </select>
-                  <Button className="mt-4 w-full" onClick={saveAssignments} disabled={saving}>{saving ? "Saving..." : "Save Assignments"}</Button>
-                </section>
-              </div>
-            </div>
-          )}
-        </Card>
-      </div>
+          <select value={filterGrade} onChange={(event) => setFilterGrade(event.target.value)} className="h-10 rounded-md border border-slate-300 px-3 text-sm">
+            <option value="">All grades/forms</option>
+            {classGradeOptions.map((item) => <option key={item} value={item}>{item}</option>)}
+          </select>
+          <select value={filterStream} onChange={(event) => setFilterStream(event.target.value)} className="h-10 rounded-md border border-slate-300 px-3 text-sm">
+            <option value="">All sections</option>
+            {streamOptions.map((item) => <option key={item} value={item}>{item}</option>)}
+          </select>
+          <select value={filterYear} onChange={(event) => setFilterYear(event.target.value)} className="h-10 rounded-md border border-slate-300 px-3 text-sm">
+            <option value="">All years</option>
+            {years.map((year) => <option key={year.id} value={year.id}>{year.name}</option>)}
+          </select>
+          <Button onClick={applyFilters}>Filter</Button>
+        </div>
+      </Card>
 
       {showAddClass ? (
         <Card>
-          <div className="flex items-center justify-between"><div><h2 className="text-lg font-semibold">Add a Class</h2><p className="text-sm text-slate-500">Create Form 1, Form 2, Form 3 through Form 6.</p></div><button onClick={() => setShowAddClass(false)} className="text-sm text-slate-500">Close</button></div>
-          <form onSubmit={createClass} className="mt-5 grid gap-4 lg:grid-cols-4">
-            <label className="space-y-1 text-sm font-medium">Class name <span className="text-coral">*</span><Input name="name" placeholder="e.g. Form 3" required /></label>
-            <label className="space-y-1 text-sm font-medium">
-              Grade level <span className="text-coral">*</span>
-              <select name="gradeLevel" required className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm">
-                <option value="">Select form</option>
-                {[1, 2, 3, 4, 5, 6].map((form) => <option key={form} value={form}>Form {form}</option>)}
+          <h2 className="text-lg font-semibold">Create Class</h2>
+          <form onSubmit={createClass} className="mt-5 grid gap-4 lg:grid-cols-3">
+            <label className="space-y-1 text-sm font-medium">Class name<Input name="name" placeholder="e.g. Form 1A, Form 3 Science" required /></label>
+            <label className="space-y-1 text-sm font-medium">Grade/Form level
+              <select value={gradeLevel} onChange={(event) => setGradeLevel(event.target.value)} required className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm">
+                <option value="">Select level</option>
+                {gradeOptions.map((item) => <option key={item} value={item}>{item}</option>)}
               </select>
             </label>
-            <label className="space-y-1 text-sm font-medium">Capacity<Input name="capacity" type="number" min="1" defaultValue="35" /></label>
-            <div className="flex items-end"><Button className="w-full" disabled={saving}>{saving ? "Saving..." : "Create Class"}</Button></div>
-            <label className="space-y-1 text-sm font-medium lg:col-span-2">Subjects
-              <select multiple value={selectedSubjectIds.map(String)} onChange={(event) => setSelectedSubjectIds(Array.from(event.target.selectedOptions, (option) => Number(option.value)))} className="min-h-28 w-full rounded-md border border-slate-300 bg-white p-2 text-sm">
-                {subjects.map((subject) => <option key={subject.id} value={subject.id}>{subject.code} - {subject.name}</option>)}
+            {gradeLevel === "Custom" ? <label className="space-y-1 text-sm font-medium">Custom grade/form<Input value={customGrade} onChange={(event) => setCustomGrade(event.target.value)} placeholder="e.g. Grade 7 Red" required /></label> : null}
+            <label className="space-y-1 text-sm font-medium">Stream/section<Input name="stream" placeholder="e.g. A, Red, Section 1" /></label>
+            <label className="space-y-1 text-sm font-medium">Capacity<Input name="capacity" type="number" min="1" placeholder="e.g. 35" defaultValue="35" required /></label>
+            <label className="space-y-1 text-sm font-medium">Academic year
+              <select name="academicYearId" required className="h-10 w-full rounded-md border border-slate-300 bg-white px-3 text-sm">
+                <option value="">Select academic year</option>
+                {years.map((year) => <option key={year.id} value={year.id}>{year.name}</option>)}
               </select>
             </label>
-            <div className="space-y-2 lg:col-span-2">
-              <button type="button" onClick={() => setManualSubjects((current) => [...current, { name: "", code: "", stream: "" }])} className="inline-flex items-center gap-1 text-sm font-semibold text-brand"><Plus className="h-4 w-4" /> Add a new subject</button>
-              {manualSubjects.map((subject, index) => (
-                <div key={index} className="grid grid-cols-[1fr_110px_36px] gap-2">
-                  <Input value={subject.name} onChange={(event) => setManualSubjects((current) => current.map((item, i) => i === index ? { ...item, name: event.target.value } : item))} placeholder="Subject name" />
-                  <Input value={subject.code} onChange={(event) => setManualSubjects((current) => current.map((item, i) => i === index ? { ...item, code: event.target.value } : item))} placeholder="Code" />
-                  <button type="button" onClick={() => setManualSubjects((current) => current.filter((_, i) => i !== index))} className="grid place-items-center text-coral"><Trash2 className="h-4 w-4" /></button>
-                </div>
-              ))}
-            </div>
-            <div className="space-y-2 lg:col-span-2">
-              <p className="text-sm font-medium">Assign teachers</p>
-              <p className="text-xs text-slate-500">Choose one or more teachers who will teach this class.</p>
-              <div className="grid max-h-48 gap-2 overflow-y-auto rounded-lg border border-slate-200 p-2 sm:grid-cols-2">
-                {teachers.map((teacher) => {
-                  const selected = newClassTeacherIds.includes(teacher.id) || newClassTeacherId === String(teacher.id);
-                  return (
-                    <button
-                      key={teacher.id}
-                      type="button"
-                      onClick={() => setNewClassTeacherIds((current) =>
-                        current.includes(teacher.id)
-                          ? current.filter((id) => id !== teacher.id)
-                          : [...current, teacher.id]
-                      )}
-                      className={`flex items-center gap-2 rounded-lg border p-2 text-left ${selected ? "border-brand bg-teal-50" : "border-slate-200"}`}
-                    >
-                      <span className={`grid h-5 w-5 place-items-center rounded border ${selected ? "border-brand bg-brand text-white" : "border-slate-300"}`}>
-                        {selected ? <Check className="h-3.5 w-3.5" /> : null}
-                      </span>
-                      <span><span className="block text-sm font-semibold">{teacher.name}</span><span className="text-xs text-slate-500">{teacher.employeeNumber}</span></span>
-                    </button>
-                  );
-                })}
-                {!teachers.length ? <p className="p-2 text-sm text-slate-500">No active teachers found.</p> : null}
-              </div>
-              {newClassTeacherIds.map((teacherId) => {
-                const teacher = teachers.find((item) => item.id === teacherId);
-                const assigned = teacherSubjectAssignments[teacherId] ?? [];
-                return (
-                  <div key={teacherId} className="rounded-lg border border-slate-200 p-3">
-                    <p className="text-sm font-semibold">{teacher?.name}</p>
-                    <p className="mb-2 text-xs text-slate-500">Select subjects this teacher will teach in this class.</p>
-                    <div className="grid gap-2 sm:grid-cols-2">
-                      {subjects.filter((subject) => selectedSubjectIds.includes(subject.id)).map((subject) => {
-                        const checked = assigned.includes(subject.id);
-                        return (
-                          <button
-                            key={subject.id}
-                            type="button"
-                            onClick={() => setTeacherSubjectAssignments((current) => ({
-                              ...current,
-                              [teacherId]: checked
-                                ? assigned.filter((id) => id !== subject.id)
-                                : [...assigned, subject.id]
-                            }))}
-                            className={`flex items-center gap-2 rounded-md border p-2 text-left text-xs ${checked ? "border-brand bg-teal-50" : "border-slate-200"}`}
-                          >
-                            <span className={`grid h-4 w-4 place-items-center rounded border ${checked ? "border-brand bg-brand text-white" : "border-slate-300"}`}>
-                              {checked ? <Check className="h-3 w-3" /> : null}
-                            </span>
-                            {subject.code} - {subject.name}
-                          </button>
-                        );
-                      })}
-                      {!selectedSubjectIds.length ? <p className="text-xs text-slate-500">Select class subjects above first.</p> : null}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-            <label className="space-y-1 text-sm font-medium lg:col-span-2">
-              Class Teacher
-              <select
-                value={newClassTeacherId}
-                onChange={(event) => {
-                  setNewClassTeacherId(event.target.value);
-                  if (event.target.value) {
-                    setNewClassTeacherIds((current) => Array.from(new Set([...current, Number(event.target.value)])));
-                  }
-                }}
-                className="h-11 w-full rounded-md border border-slate-300 bg-white px-3 text-sm"
-              >
-                <option value="">Not assigned</option>
-                {teachers.map((teacher) => <option key={teacher.id} value={teacher.id}>{teacher.employeeNumber} - {teacher.name}</option>)}
-              </select>
-              <span className="block text-xs font-normal text-slate-500">Only one Class Teacher can be selected.</span>
-            </label>
+            <div className="flex items-end"><Button disabled={saving || (gradeLevel === "Custom" && !customGrade.trim())}>{saving ? "Saving..." : "Create Class"}</Button></div>
           </form>
         </Card>
       ) : null}
+
       {error ? <p className="rounded-md bg-red-50 px-4 py-3 text-sm text-red-700">{error}</p> : null}
+      {message ? <p className="rounded-md bg-emerald-50 px-4 py-3 text-sm text-emerald-700">{message}</p> : null}
+
+      {!classes.length ? (
+        <Card><p className="py-10 text-center text-sm text-slate-500">No classes found. Create your first class to begin.</p></Card>
+      ) : (
+        <div className="grid gap-4 xl:grid-cols-2">
+          {classes.map((schoolClass) => (
+            <Card key={schoolClass.id} className="space-y-4">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <h3 className="text-lg font-semibold">{schoolClass.name}</h3>
+                  <p className="text-sm text-slate-500">{schoolClass.gradeLevel}{schoolClass.stream ? ` - ${schoolClass.stream}` : ""}</p>
+                </div>
+                <span className="rounded-full bg-teal-50 px-3 py-1 text-xs font-semibold text-brand">{schoolClass.enrollment} students</span>
+              </div>
+              <div className="grid grid-cols-2 gap-3 text-sm md:grid-cols-4">
+                <Metric label="Subjects" value={schoolClass.subjectCount} />
+                <Metric label="Teachers" value={schoolClass.teacherCount} />
+                <Metric label="Capacity" value={schoolClass.capacity} />
+                <Metric label="Year" value={schoolClass.academicYear || "-"} />
+              </div>
+              <p className="text-sm"><span className="font-semibold">Class Teacher:</span> {schoolClass.classTeacher?.name || "Not assigned"}</p>
+              <div className="flex justify-end gap-2">
+                <button type="button" onClick={() => deleteClass(schoolClass)} disabled={deletingId === schoolClass.id} className="inline-flex items-center gap-2 rounded-md px-3 py-2 text-sm font-semibold text-red-600 hover:bg-red-50 disabled:opacity-50">
+                  <Trash2 className="h-4 w-4" /> Delete
+                </button>
+                <Button onClick={() => openDetail(schoolClass.id)}><Eye className="h-4 w-4" /> View Class</Button>
+              </div>
+            </Card>
+          ))}
+        </div>
+      )}
+
+      {detail ? (
+        <Card className="space-y-4">
+          <div className="flex flex-col gap-2 border-b border-slate-100 pb-4 md:flex-row md:items-center md:justify-between">
+            <div>
+              <h2 className="text-xl font-bold">{detail.item.name}</h2>
+              <p className="text-sm text-slate-500">{detail.item.gradeLevel}{detail.item.stream ? ` - ${detail.item.stream}` : ""}</p>
+            </div>
+            <button onClick={() => setDetail(null)} className="text-sm font-semibold text-slate-500">Close details</button>
+          </div>
+          <div className="flex gap-2 overflow-x-auto">
+            {tabs.map((tab) => (
+              <button key={tab} type="button" onClick={() => setActiveTab(tab)} className={`whitespace-nowrap rounded-md px-3 py-2 text-sm font-semibold ${activeTab === tab ? "bg-brand text-white" : "bg-slate-100 text-slate-600"}`}>{tab}</button>
+            ))}
+          </div>
+          {activeTab === "Overview" ? <Overview detail={detail} /> : null}
+          {activeTab === "Students" ? <StudentsTab students={detail.students} /> : null}
+          {activeTab === "Subjects" ? <SubjectsTab subjects={detail.subjects} /> : null}
+          {activeTab === "Teachers" ? <TeachersTab teachers={detail.teachers} classTeacher={detail.classTeacher} /> : null}
+          {activeTab === "Attendance Summary" ? <Summary title="Attendance Summary" rows={[["Records", detail.attendanceSummary.records], ["Present", detail.attendanceSummary.present], ["Attendance rate", detail.attendanceSummary.attendanceRate == null ? "-" : `${detail.attendanceSummary.attendanceRate}%`]]} /> : null}
+          {activeTab === "Performance Summary" ? <Summary title="Performance Summary" rows={[["Average score", detail.performanceSummary.averageScore ?? "-"], ["Exam results", detail.performanceSummary.examResultCount], ["Final results", detail.performanceSummary.finalResultCount]]} /> : null}
+        </Card>
+      ) : null}
+    </div>
+  );
+}
+
+function Metric({ label, value }: { label: string; value: string | number }) {
+  return <div className="rounded-lg bg-slate-50 p-3"><p className="text-xs text-slate-500">{label}</p><p className="mt-1 font-semibold">{value}</p></div>;
+}
+
+function Overview({ detail }: { detail: ClassDetail }) {
+  return (
+    <div className="grid gap-3 md:grid-cols-3">
+      <Metric label="Academic year" value={detail.item.academicYear || "-"} />
+      <Metric label="Capacity" value={detail.item.capacity} />
+      <Metric label="Students" value={detail.item.studentCount} />
+      <Metric label="Subjects" value={detail.item.subjectCount} />
+      <Metric label="Teachers" value={detail.item.teacherCount} />
+      <Metric label="Class teacher" value={detail.classTeacher?.name || "No class teacher assigned."} />
+    </div>
+  );
+}
+
+function StudentsTab({ students }: { students: ClassDetail["students"] }) {
+  if (!students.length) return <p className="py-8 text-center text-sm text-slate-500">No students are registered under this class.</p>;
+  return <Table headers={["Registration", "Name", "Gender", "Parent/Guardian", "Status"]} rows={students.map((student) => [student.registrationNumber, student.name, student.gender || "-", student.parent || "-", student.status])} />;
+}
+
+function SubjectsTab({ subjects }: { subjects: ClassDetail["subjects"] }) {
+  if (!subjects.length) return <p className="py-8 text-center text-sm text-slate-500">No subjects are assigned to this class yet.</p>;
+  return <Table headers={["Code", "Subject", "Type"]} rows={subjects.map((subject) => [subject.code, subject.name, subject.subjectType || "-"])} />;
+}
+
+function TeachersTab({ teachers, classTeacher }: { teachers: ClassDetail["teachers"]; classTeacher?: ClassDetail["classTeacher"] }) {
+  return (
+    <div className="space-y-4">
+      <p className="rounded-md bg-slate-50 px-3 py-2 text-sm"><span className="font-semibold">Class Teacher:</span> {classTeacher?.name || "No class teacher assigned."}</p>
+      {!teachers.length ? <p className="py-8 text-center text-sm text-slate-500">No teachers are assigned to this class yet.</p> : null}
+      {teachers.length ? <Table headers={["Teacher", "Subject", "Department", "Email", "Phone"]} rows={teachers.map((teacher) => [teacher.teacherName, `${teacher.subjectCode} - ${teacher.subjectName}`, teacher.department || "-", teacher.email, teacher.phone || "-"])} /> : null}
+    </div>
+  );
+}
+
+function Summary({ title, rows }: { title: string; rows: [string, string | number][] }) {
+  return <div><h3 className="font-semibold">{title}</h3><div className="mt-3 grid gap-3 md:grid-cols-3">{rows.map(([label, value]) => <Metric key={label} label={label} value={value} />)}</div></div>;
+}
+
+function Table({ headers, rows }: { headers: string[]; rows: (string | number)[][] }) {
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[720px] text-left text-sm">
+        <thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr>{headers.map((header) => <th key={header} className="px-3 py-3">{header}</th>)}</tr></thead>
+        <tbody className="divide-y divide-slate-100">{rows.map((row, index) => <tr key={index}>{row.map((cell, cellIndex) => <td key={cellIndex} className="px-3 py-3">{cell}</td>)}</tr>)}</tbody>
+      </table>
     </div>
   );
 }

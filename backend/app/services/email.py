@@ -1,5 +1,4 @@
 import smtplib
-import threading
 from email.message import EmailMessage
 
 from flask import current_app
@@ -37,19 +36,15 @@ def send_password_reset_code(recipient, code):
                 smtp.ehlo()
             smtp.login(username, password)
             smtp.send_message(message)
+    except smtplib.SMTPAuthenticationError as error:
+        current_app.logger.error("Password reset email authentication failed for %s: %s", username, error)
+        raise RuntimeError("Email login failed. Check SMTP_USERNAME and the Gmail app password.") from error
+    except smtplib.SMTPRecipientsRefused as error:
+        current_app.logger.error("Password reset email recipient was refused for %s: %s", recipient, error)
+        raise RuntimeError("The teacher email address was refused by the mail server.") from error
+    except smtplib.SMTPSenderRefused as error:
+        current_app.logger.error("Password reset email sender was refused for %s: %s", sender, error)
+        raise RuntimeError("SMTP_FROM_EMAIL was refused. Use the Gmail account address or a verified alias.") from error
     except (OSError, smtplib.SMTPException) as error:
         current_app.logger.error("Password reset email delivery failed: %s", error)
         raise RuntimeError("Unable to send the email verification code.") from error
-
-
-def send_password_reset_code_async(recipient, code):
-    app = current_app._get_current_object()
-
-    def deliver():
-        with app.app_context():
-            try:
-                send_password_reset_code(recipient, code)
-            except RuntimeError:
-                app.logger.exception("Asynchronous password reset email delivery failed.")
-
-    threading.Thread(target=deliver, name="password-reset-email", daemon=True).start()

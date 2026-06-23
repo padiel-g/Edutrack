@@ -1,4 +1,5 @@
 from app.routes.analytics import analytics_bp
+from app.routes.admin_classes import admin_classes_bp
 from app.routes.admin_students import admin_students_bp
 from app.routes.admin_teachers import admin_teachers_bp
 from app.routes.attendance import attendance_bp
@@ -17,6 +18,7 @@ from app.routes.report_cards import report_cards_bp
 
 def register_routes(app):
     app.register_blueprint(auth_bp, url_prefix="/api/auth")
+    app.register_blueprint(admin_classes_bp, url_prefix="/api/admin")
     app.register_blueprint(admin_students_bp, url_prefix="/api/admin")
     app.register_blueprint(admin_teachers_bp, url_prefix="/api/admin")
     app.register_blueprint(finance_bp, url_prefix="/api/finance")

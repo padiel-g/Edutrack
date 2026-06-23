@@ -30,7 +30,11 @@ teacher_subjects = db.Table(
     db.Column("teacher_id", db.Integer, db.ForeignKey("teachers.id"), nullable=False, index=True),
     db.Column("subject_id", db.Integer, db.ForeignKey("subjects.id"), nullable=False, index=True),
     db.Column("class_id", db.Integer, db.ForeignKey("classes.id"), nullable=True),
-    db.UniqueConstraint("teacher_id", "subject_id", "class_id", name="uq_teacher_subject_class"),
+    db.Column("academic_year_id", db.Integer, db.ForeignKey("academic_years.id"), nullable=True, index=True),
+    db.Column("term_id", db.Integer, db.ForeignKey("terms.id"), nullable=True, index=True),
+    db.Column("created_at", db.DateTime, default=datetime.utcnow, nullable=False),
+    db.Column("updated_at", db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False),
+    db.UniqueConstraint("teacher_id", "subject_id", "class_id", "academic_year_id", name="uq_teacher_subject_class_year"),
 )
 
 class_subjects = db.Table(
@@ -138,17 +142,25 @@ class PasswordResetCode(db.Model):
 class SchoolClass(TimestampMixin, db.Model):
     __tablename__ = "classes"
     id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(80), unique=True, nullable=False, index=True)
-    grade_level = db.Column(db.Integer, nullable=False, index=True)
+    name = db.Column(db.String(80), nullable=False, index=True)
+    grade_level = db.Column(db.String(80), nullable=False, index=True)
+    stream = db.Column(db.String(80), nullable=True, index=True)
     capacity = db.Column(db.Integer, default=35)
+    academic_year_id = db.Column(db.Integer, db.ForeignKey("academic_years.id"), nullable=True, index=True)
     teacher_id = db.Column(db.Integer, db.ForeignKey("teachers.id"))
     subjects = db.relationship("Subject", secondary=class_subjects, back_populates="classes")
     class_teacher = db.relationship("Teacher", foreign_keys=[teacher_id])
+    academic_year = db.relationship("AcademicYear")
     assigned_teachers = db.relationship(
         "Teacher",
         secondary=teacher_classes,
         viewonly=True,
         order_by="Teacher.last_name, Teacher.first_name",
+    )
+
+    __table_args__ = (
+        db.UniqueConstraint("name", "academic_year_id", name="uq_class_name_academic_year"),
+        db.Index("ix_classes_created_at", "created_at"),
     )
 
     def to_dict(self):
@@ -166,9 +178,13 @@ class SchoolClass(TimestampMixin, db.Model):
             "id": self.id,
             "name": self.name,
             "gradeLevel": self.grade_level,
+            "stream": self.stream,
             "capacity": self.capacity,
+            "academicYearId": self.academic_year_id,
+            "academicYear": self.academic_year.name if self.academic_year else None,
             "classTeacherId": self.teacher_id,
             "classTeacher": class_teacher,
+            "studentCount": len(self.students),
             "teachers": [
                 {
                     "id": teacher.id,
@@ -314,6 +330,19 @@ class Teacher(TimestampMixin, db.Model):
         # teacher_classes association; we also union in any classes inferred
         # from teacher_subjects to keep historical data visible.
         class_rows = list(self.assigned_classes)
+        assignment_rows = db.session.execute(
+            db.select(
+                teacher_subjects.c.class_id,
+                teacher_subjects.c.subject_id,
+                SchoolClass.name.label("class_name"),
+                Subject.code.label("subject_code"),
+                Subject.name.label("subject_name"),
+            )
+            .join(SchoolClass, SchoolClass.id == teacher_subjects.c.class_id)
+            .join(Subject, Subject.id == teacher_subjects.c.subject_id)
+            .where(teacher_subjects.c.teacher_id == self.id)
+            .order_by(SchoolClass.name, Subject.name)
+        ).all()
         return {
             "id": self.id,
             "userId": self.user_id,
@@ -336,6 +365,16 @@ class Teacher(TimestampMixin, db.Model):
             "mustChangePassword": self.user.must_change_password if self.user else None,
             "subjects": [subject.to_dict() for subject in self.subjects],
             "classes": [{"id": row.id, "name": row.name} for row in class_rows],
+            "assignments": [
+                {
+                    "classId": row.class_id,
+                    "subjectId": row.subject_id,
+                    "className": row.class_name,
+                    "subjectCode": row.subject_code,
+                    "subjectName": row.subject_name,
+                }
+                for row in assignment_rows
+            ],
             "classTeacherOf": [
                 {"id": cls.id, "name": cls.name}
                 for cls in self.class_teacher_classes

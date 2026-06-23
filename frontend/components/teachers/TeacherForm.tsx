@@ -1,43 +1,76 @@
 "use client";
 
-import { Check, Copy } from "lucide-react";
-import { useEffect, useState } from "react";
+import { Check, Copy, Plus, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/Button";
 import { Card } from "@/components/ui/Card";
 import { Input } from "@/components/ui/Input";
 
-type Option = { id: number; name: string; code?: string };
+type SubjectOption = { id: number; name: string; code?: string };
+type ClassOption = { id: number; name: string; gradeLevel?: string; stream?: string | null; classTeacher?: string | null; classTeacherId?: number | null };
+type Assignment = { classId: number; subjectId: number };
 type Teacher = {
-  id: number; email: string; name: string; employeeNumber: string;
-  subjects: Option[]; classes: Option[]; classTeacherOf?: Option[];
+  id: number;
+  email: string;
+  name: string;
+  employeeNumber: string;
+  assignments?: { classId: number; subjectId: number; className: string; subjectName: string; subjectCode: string }[];
+  classTeacherOf?: { id: number; name: string }[];
 };
 
 export function TeacherForm({ teacherId }: { teacherId?: number }) {
-  const [subjects, setSubjects] = useState<Option[]>([]);
-  const [classes, setClasses] = useState<Option[]>([]);
-  const [selectedSubjects, setSelectedSubjects] = useState<number[]>([]);
-  const [selectedClasses, setSelectedClasses] = useState<number[]>([]);
+  const [subjects, setSubjects] = useState<SubjectOption[]>([]);
+  const [classes, setClasses] = useState<ClassOption[]>([]);
+  const [assignments, setAssignments] = useState<Assignment[]>([]);
+  const [draftClassId, setDraftClassId] = useState("");
+  const [draftSubjectId, setDraftSubjectId] = useState("");
+  const [makeClassTeacher, setMakeClassTeacher] = useState(false);
+  const [classTeacherId, setClassTeacherId] = useState("");
   const [teacher, setTeacher] = useState<Teacher | null>(null);
   const [temporaryPassword, setTemporaryPassword] = useState("");
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
 
+  const selectedClassTeacher = useMemo(
+    () => classes.find((item) => item.id === Number(classTeacherId)),
+    [classes, classTeacherId]
+  );
+
   useEffect(() => {
     Promise.all([
-      api<{ subjects: Option[]; classes: Option[] }>("/admin/teacher-form-options"),
+      api<{ subjects: SubjectOption[]; classes: ClassOption[] }>("/admin/teacher-form-options"),
       teacherId ? api<{ item: Teacher }>(`/admin/teachers/${teacherId}`) : Promise.resolve(null)
     ]).then(([options, result]) => {
       setSubjects(options.subjects);
       setClasses(options.classes);
       if (result) {
         setTeacher(result.item);
-        setSelectedSubjects(result.item.subjects.map((item) => item.id));
-        setSelectedClasses(result.item.classes.map((item) => item.id));
+        setAssignments((result.item.assignments ?? []).map((item) => ({ classId: item.classId, subjectId: item.subjectId })));
+        const assignedClassTeacher = result.item.classTeacherOf?.[0];
+        setMakeClassTeacher(Boolean(assignedClassTeacher));
+        setClassTeacherId(assignedClassTeacher ? String(assignedClassTeacher.id) : "");
       }
     }).catch((err) => setError(err instanceof Error ? err.message : "Unable to load teacher form"));
   }, [teacherId]);
+
+  function addAssignment() {
+    const classId = Number(draftClassId);
+    const subjectId = Number(draftSubjectId);
+    if (!classId || !subjectId) {
+      setError("Select both a class and a subject before adding an assignment.");
+      return;
+    }
+    if (assignments.some((item) => item.classId === classId && item.subjectId === subjectId)) {
+      setError("This class-subject assignment has already been added.");
+      return;
+    }
+    setAssignments((current) => [...current, { classId, subjectId }]);
+    setDraftClassId("");
+    setDraftSubjectId("");
+    setError("");
+  }
 
   async function submit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -50,12 +83,22 @@ export function TeacherForm({ teacherId }: { teacherId?: number }) {
         teacherId ? `/admin/teachers/${teacherId}` : "/admin/teachers",
         {
           method: teacherId ? "PUT" : "POST",
-          body: JSON.stringify({ ...values, subjectIds: selectedSubjects, classIds: selectedClasses })
+          body: JSON.stringify({
+            ...values,
+            assignments,
+            classTeacherId: makeClassTeacher && classTeacherId ? Number(classTeacherId) : null,
+          })
         }
       );
       setTeacher(response.item);
+      setAssignments((response.item.assignments ?? []).map((item) => ({ classId: item.classId, subjectId: item.subjectId })));
       setTemporaryPassword(response.temporaryPassword ?? "");
-      if (!teacherId) form.reset();
+      if (!teacherId) {
+        form.reset();
+        setAssignments([]);
+        setMakeClassTeacher(false);
+        setClassTeacherId("");
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to save teacher");
     } finally {
@@ -87,42 +130,55 @@ export function TeacherForm({ teacherId }: { teacherId?: number }) {
 
       <Card>
         <form onSubmit={submit} className="space-y-6">
-          <div className="grid gap-4 md:grid-cols-3">
-            <Field name="firstName" label="First name" required defaultValue={(teacher as any)?.firstName} />
-            <Field name="middleName" label="Middle name" defaultValue={(teacher as any)?.middleName} />
-            <Field name="lastName" label="Last name" required defaultValue={(teacher as any)?.lastName} />
-            <Select name="gender" label="Gender" options={["Female", "Male", "Other"]} defaultValue={(teacher as any)?.gender} />
-            <Field name="nationalId" label="National ID" defaultValue={(teacher as any)?.nationalId} />
-            <Field name="email" label="Email" type="email" required defaultValue={teacher?.email} />
-            <Field name="phone" label="Phone" defaultValue={(teacher as any)?.phone} />
-            <Field name="qualification" label="Qualification" defaultValue={(teacher as any)?.qualification} />
-            <Field name="department" label="Department" defaultValue={(teacher as any)?.department} />
-            <Field name="specialization" label="Specialization" defaultValue={(teacher as any)?.specialization} />
-            <Field name="hireDate" label="Hire date" type="date" defaultValue={(teacher as any)?.hireDate} />
-            <Select name="employmentStatus" label="Employment status" options={["Active", "Inactive", "Suspended"]} defaultValue={(teacher as any)?.employmentStatus ?? "Active"} />
-            <label className="space-y-1 text-sm font-medium md:col-span-3">Address<textarea name="address" defaultValue={(teacher as any)?.address} className="min-h-24 w-full rounded-md border border-slate-300 px-3 py-2 text-sm" /></label>
-          </div>
-
-          <div className="grid gap-4 md:grid-cols-2">
-            <MultiSelect label="Assigned subjects" options={subjects} values={selectedSubjects} onChange={setSelectedSubjects} />
-            <div className="space-y-2">
-              <MultiSelect
-                label="Classes the teacher will teach"
-                options={classes}
-                values={selectedClasses}
-                onChange={setSelectedClasses}
-              />
-              {teacher?.classTeacherOf?.length ? (
-                <p className="rounded-md bg-teal-50 px-3 py-2 text-xs text-teal-700">
-                  <span className="font-semibold">Class Teacher of:</span>{" "}
-                  {teacher.classTeacherOf.map((item) => item.name).join(", ")}
-                </p>
-              ) : null}
-              <p className="text-xs text-slate-500">
-                Use the Classes page to designate this teacher as the Class Teacher of a class.
-              </p>
+          <section className="space-y-4">
+            <h2 className="text-lg font-semibold">Personal Information</h2>
+            <div className="grid gap-4 md:grid-cols-3">
+              <Field name="firstName" label="First name" required defaultValue={(teacher as any)?.firstName} />
+              <Field name="middleName" label="Middle name" defaultValue={(teacher as any)?.middleName} />
+              <Field name="lastName" label="Last name" required defaultValue={(teacher as any)?.lastName} />
+              <Select name="gender" label="Gender" options={["Female", "Male", "Other"]} defaultValue={(teacher as any)?.gender} />
+              <Field name="nationalId" label="National ID" defaultValue={(teacher as any)?.nationalId} />
+              <Field name="phone" label="Phone" defaultValue={(teacher as any)?.phone} />
+              <Field name="qualification" label="Qualification" defaultValue={(teacher as any)?.qualification} />
+              <Field name="department" label="Department" defaultValue={(teacher as any)?.department} />
+              <Field name="specialization" label="Specialization" defaultValue={(teacher as any)?.specialization} />
+              <Field name="hireDate" label="Hire date" type="date" defaultValue={(teacher as any)?.hireDate} />
+              <Select name="employmentStatus" label="Employment status" options={["Active", "Inactive", "Suspended"]} defaultValue={(teacher as any)?.employmentStatus ?? "Active"} />
+              <label className="space-y-1 text-sm font-medium md:col-span-3">Address<textarea name="address" defaultValue={(teacher as any)?.address} className="min-h-24 w-full rounded-md border border-slate-300 px-3 py-2 text-sm" /></label>
             </div>
-          </div>
+          </section>
+
+          <section className="space-y-4">
+            <h2 className="text-lg font-semibold">Account Information</h2>
+            <div className="grid gap-4 md:grid-cols-2">
+              <Field name="email" label="Email used as login username" type="email" required defaultValue={teacher?.email} />
+              <div className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-600">Role is automatically Teacher. A secure default password is generated on creation and must be changed on first login.</div>
+            </div>
+          </section>
+
+          <section className="space-y-4">
+            <h2 className="text-lg font-semibold">Teaching Assignments</h2>
+            <div className="grid gap-3 md:grid-cols-[1fr_1fr_160px]">
+              <SelectBox value={draftClassId} onChange={setDraftClassId} label="Class" placeholder="Select class" options={classes.map((item) => ({ id: item.id, label: `${item.name}${item.stream ? ` - ${item.stream}` : ""}` }))} />
+              <SelectBox value={draftSubjectId} onChange={setDraftSubjectId} label="Subject" placeholder="Select subject" options={subjects.map((item) => ({ id: item.id, label: `${item.code ? `${item.code} - ` : ""}${item.name}` }))} />
+              <div className="flex items-end"><Button type="button" onClick={addAssignment} className="w-full"><Plus className="h-4 w-4" /> Add Assignment</Button></div>
+            </div>
+            <AssignmentTable assignments={assignments} classes={classes} subjects={subjects} onRemove={(assignment) => setAssignments((current) => current.filter((item) => item !== assignment))} />
+          </section>
+
+          <section className="space-y-4">
+            <h2 className="text-lg font-semibold">Assign as Class Teacher</h2>
+            <label className="flex items-center gap-2 text-sm font-medium"><input type="checkbox" checked={makeClassTeacher} onChange={(event) => setMakeClassTeacher(event.target.checked)} /> Make this teacher a class teacher</label>
+            {makeClassTeacher ? (
+              <div className="grid gap-3 md:grid-cols-2">
+                <SelectBox value={classTeacherId} onChange={setClassTeacherId} label="Class teacher class" placeholder="Select class" options={classes.map((item) => ({ id: item.id, label: item.name }))} />
+                {selectedClassTeacher?.classTeacher && selectedClassTeacher.classTeacherId !== teacherId ? (
+                  <p className="rounded-md bg-amber-50 px-3 py-2 text-sm text-amber-800">This class already has a class teacher: {selectedClassTeacher.classTeacher}. Saving will replace them.</p>
+                ) : null}
+              </div>
+            ) : null}
+          </section>
+
           {error ? <p className="rounded-md bg-red-50 px-3 py-2 text-sm text-red-700">{error}</p> : null}
           <div className="flex justify-end"><Button disabled={loading}>{loading ? "Saving..." : teacherId ? "Update Teacher" : "Create Teacher Account"}</Button></div>
         </form>
@@ -139,14 +195,38 @@ function Select({ name, label, options, defaultValue }: { name: string; label: s
   return <label className="space-y-1 text-sm font-medium">{label}<select key={defaultValue} name={name} defaultValue={defaultValue ?? ""} className="h-10 w-full rounded-md border border-slate-300 px-3 text-sm"><option value="">Select</option>{options.map((option) => <option key={option}>{option}</option>)}</select></label>;
 }
 
-function MultiSelect({ label, options, values, onChange }: { label: string; options: Option[]; values: number[]; onChange: (values: number[]) => void }) {
+function SelectBox({ label, placeholder, value, onChange, options }: { label: string; placeholder: string; value: string; onChange: (value: string) => void; options: { id: number; label: string }[] }) {
   return (
     <label className="space-y-1 text-sm font-medium">
       {label}
-      <select multiple value={values.map(String)} onChange={(event) => onChange(Array.from(event.target.selectedOptions, (option) => Number(option.value)))} className="min-h-40 w-full rounded-md border border-slate-300 p-2 text-sm">
-        {options.map((option) => <option key={option.id} value={option.id}>{option.code ? `${option.code} - ` : ""}{option.name}</option>)}
+      <select value={value} onChange={(event) => onChange(event.target.value)} className="h-10 w-full rounded-md border border-slate-300 px-3 text-sm">
+        <option value="">{placeholder}</option>
+        {options.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
       </select>
-      <span className="block text-xs font-normal text-slate-500">Hold Ctrl to select multiple entries.</span>
     </label>
+  );
+}
+
+function AssignmentTable({ assignments, classes, subjects, onRemove }: { assignments: Assignment[]; classes: ClassOption[]; subjects: SubjectOption[]; onRemove: (assignment: Assignment) => void }) {
+  if (!assignments.length) return <p className="rounded-md bg-slate-50 px-3 py-3 text-sm text-slate-500">No teaching assignments added yet.</p>;
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full min-w-[560px] text-left text-sm">
+        <thead className="bg-slate-50 text-xs uppercase text-slate-500"><tr><th className="px-3 py-3">Class</th><th className="px-3 py-3">Subject</th><th className="px-3 py-3 text-right">Action</th></tr></thead>
+        <tbody className="divide-y divide-slate-100">
+          {assignments.map((assignment) => {
+            const schoolClass = classes.find((item) => item.id === assignment.classId);
+            const subject = subjects.find((item) => item.id === assignment.subjectId);
+            return (
+              <tr key={`${assignment.classId}-${assignment.subjectId}`}>
+                <td className="px-3 py-3">{schoolClass?.name ?? assignment.classId}</td>
+                <td className="px-3 py-3">{subject ? `${subject.code ? `${subject.code} - ` : ""}${subject.name}` : assignment.subjectId}</td>
+                <td className="px-3 py-3 text-right"><button type="button" onClick={() => onRemove(assignment)} className="rounded-md p-2 text-coral"><Trash2 className="h-4 w-4" /></button></td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
   );
 }

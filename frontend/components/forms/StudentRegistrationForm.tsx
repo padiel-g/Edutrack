@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/Input";
 import type { Student, StudentSubject } from "@/types/student";
 
 type Options = {
-  classes: { id: number; name: string }[];
+  classes: { id: number; name: string; gradeLevel?: string; stream?: string | null; academicYearId?: number | null; academicYear?: string | null }[];
   academicYears: { id: number; name: string }[];
   parents: { id: number; name: string }[];
   subjects: StudentSubject[];
@@ -17,19 +17,13 @@ type Options = {
   classStreams: string[];
 };
 
-const STREAM_SUBJECT_HINTS: Record<string, string[]> = {
-  Sciences: ["Mathematics", "Biology", "Chemistry", "Physics", "Geography", "English"],
-  Commercials: ["Mathematics", "Accounts", "Economics", "Business Studies", "Commerce", "English"],
-  Arts: ["History", "Literature", "Divinity", "Geography", "Shona/Ndebele", "English"]
-};
-
 const DEFAULT_OPTIONS: Options = {
   classes: [],
   academicYears: [],
   parents: [],
   subjects: [],
-  gradeForms: ["Form 1", "Form 2", "Form 3", "Form 4", "Form 5", "Form 6"],
-  classStreams: ["Commercials", "Sciences", "Arts", "General", "Technical", "Agriculture"]
+  gradeForms: [],
+  classStreams: []
 };
 
 export function StudentRegistrationForm() {
@@ -39,8 +33,7 @@ export function StudentRegistrationForm() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  const [gradeForm, setGradeForm] = useState("");
-  const [classStream, setClassStream] = useState("");
+  const [classId, setClassId] = useState("");
   const [numberOfSubjects, setNumberOfSubjects] = useState<number | "">("");
   const [selectedSubjectIds, setSelectedSubjectIds] = useState<number[]>([]);
 
@@ -50,23 +43,22 @@ export function StudentRegistrationForm() {
       .catch((err) => setError(err instanceof Error ? err.message : "Unable to load registration options."));
   }, []);
 
-  const suggestedNames = useMemo(() => new Set(STREAM_SUBJECT_HINTS[classStream] ?? []), [classStream]);
+  const selectedClass = useMemo(
+    () => options.classes.find((item) => item.id === Number(classId)),
+    [options.classes, classId]
+  );
 
   const visibleSubjects = useMemo(() => {
-    if (!classStream) return options.subjects;
+    const stream = selectedClass?.stream;
     return options.subjects
       .slice()
       .sort((a, b) => {
-        const aMatch = a.stream === classStream || suggestedNames.has(a.name);
-        const bMatch = b.stream === classStream || suggestedNames.has(b.name);
+        const aMatch = stream ? a.stream === stream : false;
+        const bMatch = stream ? b.stream === stream : false;
         if (aMatch === bMatch) return a.name.localeCompare(b.name);
         return aMatch ? -1 : 1;
       });
-  }, [options.subjects, classStream, suggestedNames]);
-
-  function isSuggested(subject: StudentSubject) {
-    return subject.stream === classStream || suggestedNames.has(subject.name);
-  }
+  }, [options.subjects, selectedClass]);
 
   function toggleSubject(id: number) {
     setSelectedSubjectIds((prev) => {
@@ -78,7 +70,7 @@ export function StudentRegistrationForm() {
 
   useEffect(() => {
     setSelectedSubjectIds([]);
-  }, [classStream]);
+  }, [classId]);
 
   const expectedCount = typeof numberOfSubjects === "number" ? numberOfSubjects : 0;
 
@@ -98,19 +90,14 @@ export function StudentRegistrationForm() {
     setLoading(true);
     setError("");
 
-    if (!gradeForm) {
+    if (!classId) {
       setLoading(false);
-      setError("Grade/Form is required.");
+      setError("Select a class before registering the student.");
       return;
     }
     if (!options.subjects.length) {
       setLoading(false);
       setError("Subjects could not be loaded. Refresh the page and try again.");
-      return;
-    }
-    if (!classStream) {
-      setLoading(false);
-      setError("Class/Stream is required.");
       return;
     }
     if (!expectedCount || expectedCount <= 0) {
@@ -145,8 +132,7 @@ export function StudentRegistrationForm() {
           ...body,
           academicYearId: body.academicYearId ? Number(body.academicYearId) : undefined,
           parentId: body.parentId ? Number(body.parentId) : undefined,
-          gradeForm,
-          classStream,
+          classId: Number(classId),
           numberOfSubjects: expectedCount,
           selectedSubjectIds
         })
@@ -154,8 +140,7 @@ export function StudentRegistrationForm() {
       setCreated(response.item);
       setParentTemporaryPassword(response.parentTemporaryPassword);
       formEl.reset();
-      setGradeForm("");
-      setClassStream("");
+      setClassId("");
       setNumberOfSubjects("");
       setSelectedSubjectIds([]);
     } catch (err) {
@@ -256,35 +241,27 @@ export function StudentRegistrationForm() {
           <section className="space-y-4">
             <header className="border-b border-slate-200 pb-2">
               <h2 className="text-lg font-semibold">Academic Details</h2>
-              <p className="text-xs text-slate-500">
-                Choose the student&apos;s grade, stream and registered subjects. Subjects are filtered by stream.
-              </p>
+              <p className="text-xs text-slate-500">Choose the Admin-created class and registered subjects.</p>
             </header>
             <div className="grid gap-4 md:grid-cols-3">
               <label className="space-y-1 text-sm font-medium">
-                Grade / Form <span className="text-coral">*</span>
+                Class <span className="text-coral">*</span>
                 <select
-                  value={gradeForm}
-                  onChange={(event) => setGradeForm(event.target.value)}
+                  value={classId}
+                  onChange={(event) => setClassId(event.target.value)}
                   className="h-10 w-full rounded-md border border-slate-300 px-3 text-sm"
                   required
                 >
-                  <option value="">Select grade/form</option>
-                  {options.gradeForms.map((item) => <option key={item} value={item}>{item}</option>)}
+                  <option value="">Select class</option>
+                  {options.classes.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {[item.name, item.gradeLevel, item.stream, item.academicYear].filter(Boolean).join(" - ")}
+                    </option>
+                  ))}
                 </select>
               </label>
-              <label className="space-y-1 text-sm font-medium">
-                Class / Stream <span className="text-coral">*</span>
-                <select
-                  value={classStream}
-                  onChange={(event) => setClassStream(event.target.value)}
-                  className="h-10 w-full rounded-md border border-slate-300 px-3 text-sm"
-                  required
-                >
-                  <option value="">Select stream</option>
-                  {options.classStreams.map((item) => <option key={item} value={item}>{item}</option>)}
-                </select>
-              </label>
+              <ReadOnlyValue label="Grade / Form" value={selectedClass?.gradeLevel} />
+              <ReadOnlyValue label="Stream / Section" value={selectedClass?.stream || selectedClass?.name} />
               <label className="space-y-1 text-sm font-medium">
                 Number of subjects <span className="text-coral">*</span>
                 <select
@@ -310,19 +287,12 @@ export function StudentRegistrationForm() {
                   {selectedSubjectIds.length} selected{expectedCount ? ` / ${expectedCount} required` : ""}
                 </p>
               </div>
-              {classStream ? (
-                <p className="text-xs text-slate-500">
-                  Suggested for <span className="font-semibold text-ink">{classStream}</span>:&nbsp;
-                  {(STREAM_SUBJECT_HINTS[classStream] ?? []).join(", ") || "any subject"}
-                </p>
-              ) : (
-                <p className="text-xs text-slate-500">Pick a stream to filter suggested subjects.</p>
-              )}
+              <p className="text-xs text-slate-500">Subjects matching the selected class section are shown first.</p>
               <div className="grid max-h-64 gap-2 overflow-y-auto rounded-md border border-slate-200 bg-slate-50 p-3 sm:grid-cols-2 lg:grid-cols-3">
                 {visibleSubjects.length ? (
                   visibleSubjects.map((subject) => {
                     const checked = selectedSubjectIds.includes(subject.id);
-                    const suggested = isSuggested(subject);
+                    const suggested = Boolean(selectedClass?.stream && subject.stream === selectedClass.stream);
                     return (
                       <label
                         key={subject.id}
@@ -396,6 +366,17 @@ function Select({ label, name, options }: { label: string; name: string; options
         {options.map((option) => <option key={option}>{option}</option>)}
       </select>
     </label>
+  );
+}
+
+function ReadOnlyValue({ label, value }: { label: string; value?: string | null }) {
+  return (
+    <div className="space-y-1 text-sm font-medium">
+      <p>{label}</p>
+      <div className="flex h-10 items-center rounded-md border border-slate-200 bg-slate-50 px-3 text-sm text-slate-600">
+        {value || "Selected from class"}
+      </div>
+    </div>
   );
 }
 

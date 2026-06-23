@@ -34,10 +34,15 @@ export function StudentsTable() {
     load();
   }, []);
 
-  async function deactivate(id: number) {
-    if (!confirm("Deactivate this student?")) return;
-    await api(`/admin/students/${id}`, { method: "DELETE" });
-    load();
+  async function deleteStudent(student: Student) {
+    if (!confirm(`Delete ${student.name}'s student account? This only works when the student has no attendance, results, finance, submission, or report records.`)) return;
+    setError("");
+    try {
+      await api(`/admin/students/${student.id}`, { method: "DELETE" });
+      load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to delete student account");
+    }
   }
 
   return (
@@ -45,7 +50,7 @@ export function StudentsTable() {
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
           <h2 className="text-lg font-semibold">Registered Students</h2>
-          <p className="text-sm text-slate-500">Search, filter, profile, edit, assign, link guardians, and deactivate students.</p>
+          <p className="text-sm text-slate-500">Search, filter, profile, edit, assign, link guardians, and delete accounts with no records.</p>
         </div>
         <Link href="/admin/students/register"><Button><UserPlus className="h-4 w-4" /> Register student</Button></Link>
       </div>
@@ -94,7 +99,7 @@ export function StudentsTable() {
                   <td className="px-3 py-3 text-right">
                     <Link className="inline-flex rounded-md p-2" href={`/admin/students/${student.id}`} aria-label="View profile"><Eye className="h-4 w-4" /></Link>
                     <button className="rounded-md p-2" aria-label="Edit"><Edit className="h-4 w-4" /></button>
-                    <button onClick={() => deactivate(student.id)} className="rounded-md p-2 text-coral" aria-label="Deactivate"><Trash2 className="h-4 w-4" /></button>
+                    <button onClick={() => deleteStudent(student)} className="rounded-md p-2 text-coral" aria-label="Delete student account" title="Delete student account"><Trash2 className="h-4 w-4" /></button>
                   </td>
                 </tr>
               ))}
