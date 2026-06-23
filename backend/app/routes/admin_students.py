@@ -47,6 +47,43 @@ def dependency_names(checks):
     return [name for name, query in checks if query.first() is not None]
 
 
+def current_academic_year_id():
+    current = AcademicYear.query.filter_by(is_current=True).order_by(AcademicYear.id.desc()).first()
+    if current:
+        return current.id
+    latest = AcademicYear.query.order_by(AcademicYear.start_date.desc(), AcademicYear.id.desc()).first()
+    return latest.id if latest else None
+
+
+def resolve_student_class(data):
+    class_id = data.get("classId")
+    class_name = (data.get("className") or "").strip()
+    academic_year_id = data.get("academicYearId") or current_academic_year_id()
+    if class_id:
+        try:
+            class_id = int(class_id)
+        except (TypeError, ValueError):
+            raise ValueError("Class ID must be a valid integer.")
+        school_class = db.session.get(SchoolClass, class_id)
+        if not school_class:
+            raise LookupError("Selected class was not found.")
+        return school_class
+    if not class_name:
+        raise ValueError("Type a class before registering the student.")
+    school_class = SchoolClass.query.filter_by(name=class_name, academic_year_id=academic_year_id).first()
+    if school_class:
+        return school_class
+    school_class = SchoolClass(
+        name=class_name,
+        grade_level=class_name,
+        capacity=35,
+        academic_year_id=academic_year_id,
+    )
+    db.session.add(school_class)
+    db.session.flush()
+    return school_class
+
+
 def delete_linked_user_if_unused(user):
     if not user:
         return
@@ -106,17 +143,15 @@ def create_student():
     if not first_name or not last_name:
         return jsonify({"error": "First name and last name are required."}), 400
 
-    class_id = data.get("classId")
     number_of_subjects = data.get("numberOfSubjects")
     raw_subject_ids = data.get("selectedSubjectIds") or []
 
     try:
-        class_id = int(class_id)
-    except (TypeError, ValueError):
-        return jsonify({"error": "Select a class created under Admin Classes before registering a student."}), 400
-    school_class = db.session.get(SchoolClass, class_id)
-    if not school_class:
-        return jsonify({"error": "Selected class was not found."}), 404
+        school_class = resolve_student_class(data)
+    except LookupError as error:
+        return jsonify({"error": str(error)}), 404
+    except ValueError as error:
+        return jsonify({"error": str(error)}), 400
     grade_form = school_class.grade_level
     class_stream = school_class.stream or school_class.name
     try:

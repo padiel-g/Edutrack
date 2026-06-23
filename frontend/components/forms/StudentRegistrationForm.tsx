@@ -33,7 +33,7 @@ export function StudentRegistrationForm() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  const [classId, setClassId] = useState("");
+  const [className, setClassName] = useState("");
   const [numberOfSubjects, setNumberOfSubjects] = useState<number | "">("");
   const [selectedSubjectIds, setSelectedSubjectIds] = useState<number[]>([]);
 
@@ -44,8 +44,8 @@ export function StudentRegistrationForm() {
   }, []);
 
   const selectedClass = useMemo(
-    () => options.classes.find((item) => item.id === Number(classId)),
-    [options.classes, classId]
+    () => options.classes.find((item) => item.name.toLowerCase() === className.trim().toLowerCase()),
+    [options.classes, className]
   );
 
   const visibleSubjects = useMemo(() => {
@@ -70,7 +70,7 @@ export function StudentRegistrationForm() {
 
   useEffect(() => {
     setSelectedSubjectIds([]);
-  }, [classId]);
+  }, [className]);
 
   const expectedCount = typeof numberOfSubjects === "number" ? numberOfSubjects : 0;
 
@@ -90,9 +90,10 @@ export function StudentRegistrationForm() {
     setLoading(true);
     setError("");
 
-    if (!classId) {
+    const typedClassName = className.trim();
+    if (!typedClassName) {
       setLoading(false);
-      setError("Select a class before registering the student.");
+      setError("Type a class before registering the student.");
       return;
     }
     if (!options.subjects.length) {
@@ -132,7 +133,8 @@ export function StudentRegistrationForm() {
           ...body,
           academicYearId: body.academicYearId ? Number(body.academicYearId) : undefined,
           parentId: body.parentId ? Number(body.parentId) : undefined,
-          classId: Number(classId),
+          classId: selectedClass?.id,
+          className: typedClassName,
           numberOfSubjects: expectedCount,
           selectedSubjectIds
         })
@@ -140,7 +142,7 @@ export function StudentRegistrationForm() {
       setCreated(response.item);
       setParentTemporaryPassword(response.parentTemporaryPassword);
       formEl.reset();
-      setClassId("");
+      setClassName("");
       setNumberOfSubjects("");
       setSelectedSubjectIds([]);
     } catch (err) {
@@ -246,22 +248,13 @@ export function StudentRegistrationForm() {
             <div className="grid gap-4 md:grid-cols-3">
               <label className="space-y-1 text-sm font-medium">
                 Class <span className="text-coral">*</span>
-                <select
-                  value={classId}
-                  onChange={(event) => setClassId(event.target.value)}
-                  className="h-10 w-full rounded-md border border-slate-300 px-3 text-sm"
-                  required
-                >
-                  <option value="">Select class</option>
-                  {options.classes.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {[item.name, item.gradeLevel, item.stream, item.academicYear].filter(Boolean).join(" - ")}
-                    </option>
-                  ))}
-                </select>
+                <Input list="student-class-options" value={className} onChange={(event) => setClassName(event.target.value)} placeholder="Type class, e.g. Form 1A" required />
+                <datalist id="student-class-options">
+                  {options.classes.map((item) => <option key={item.id} value={item.name}>{[item.gradeLevel, item.stream, item.academicYear].filter(Boolean).join(" - ")}</option>)}
+                </datalist>
               </label>
-              <ReadOnlyValue label="Grade / Form" value={selectedClass?.gradeLevel} />
-              <ReadOnlyValue label="Stream / Section" value={selectedClass?.stream || selectedClass?.name} />
+              <ReadOnlyValue label="Grade / Form" value={selectedClass?.gradeLevel || className.trim()} />
+              <ReadOnlyValue label="Stream / Section" value={selectedClass?.stream || selectedClass?.name || className.trim()} />
               <label className="space-y-1 text-sm font-medium">
                 Number of subjects <span className="text-coral">*</span>
                 <select
